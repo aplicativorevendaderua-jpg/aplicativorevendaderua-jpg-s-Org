@@ -5,7 +5,15 @@ let supabaseInstance: SupabaseClient | null = null;
 export function isSupabaseConfigured(): boolean {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-  return !!(supabaseUrl && supabaseAnonKey && !supabaseUrl.includes('placeholder-url'));
+  const isPlaceholder = !supabaseUrl || supabaseUrl.includes('placeholder-url') || !supabaseAnonKey || supabaseAnonKey.includes('your-');
+  
+  try {
+    if (supabaseUrl) new URL(supabaseUrl);
+  } catch (e) {
+    return false;
+  }
+  
+  return !!(supabaseUrl && supabaseAnonKey && !isPlaceholder);
 }
 
 export function getSupabase(): SupabaseClient {
@@ -14,17 +22,28 @@ export function getSupabase(): SupabaseClient {
     const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
     if (!isSupabaseConfigured()) {
-      console.error('Supabase configuration is missing or using placeholders:', { 
-        url: supabaseUrl ? 'Set' : 'Missing', 
-        key: supabaseAnonKey ? 'Set' : 'Missing' 
+      console.error('Supabase configuration is missing or invalid:', {
+        url: supabaseUrl,
+        key: supabaseAnonKey ? 'Set (hidden)' : 'Missing'
       });
-      // Em vez de lançar um erro fatal, retornamos o cliente (que falhará nas chamadas, mas não no render)
-      // Ou melhor, lançamos apenas se realmente tentarem usar sem configurar
+      // Em vez de lançar um erro fatal, lançamos apenas se as variáveis estiverem realmente vazias
       if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error('Configuração do Supabase ausente ou inválida. Verifique as variáveis de ambiente VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Vercel.');
+        throw new Error('Configuração do Supabase ausente. Adicione VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
       }
     }
-    supabaseInstance = createClient(supabaseUrl, supabaseAnonKey);
+
+    try {
+      supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: true
+        }
+      });
+    } catch (e: any) {
+      console.error('Falha ao criar cliente Supabase:', e);
+      throw new Error('Erro ao inicializar Supabase: ' + e.message);
+    }
   }
   return supabaseInstance;
 }

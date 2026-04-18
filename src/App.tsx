@@ -75,6 +75,9 @@ import { getSupabase, isSupabaseConfigured } from './lib/supabase';
 
 export default function App() {
   const [isConfigured] = useState(isSupabaseConfigured());
+  useEffect(() => {
+    console.log('App initialization - Configured:', isConfigured);
+  }, [isConfigured]);
   const [currentPage, setCurrentPage] = useState<Page>('login');
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -1209,7 +1212,7 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white relative z-50">
+      <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white relative z-[60] pointer-events-auto">
       <header className="mb-10 text-left">
         <div className="mb-6 inline-flex items-center justify-center w-12 h-12 bg-primary rounded-twelve text-white">
           <ShoppingCart size={24} />
@@ -1319,7 +1322,7 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-background-light relative z-50">
+      <div className="min-h-screen bg-background-light relative z-[60] pointer-events-auto">
       <div className="flex items-center p-4 pb-2 justify-between">
         <button onClick={() => navigate('login')} className="size-12 flex items-center justify-center hover:bg-slate-200/50 rounded-full">
           <ArrowLeft size={24} />

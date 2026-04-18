@@ -1228,7 +1228,7 @@ export default function App() {
           <input 
             type="email" 
             placeholder="seu@email.com"
-            className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm"
+            className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
           />
@@ -1239,7 +1239,7 @@ export default function App() {
             <input 
               type={showPassword ? 'text' : 'password'}
               placeholder="••••••••"
-              className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm"
+              className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
@@ -1339,7 +1339,7 @@ export default function App() {
           <input
             value={fullName}
             onChange={(e) => setFullName(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
             placeholder="Seu nome completo"
           />
         </div>
@@ -1348,7 +1348,7 @@ export default function App() {
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
             placeholder="exemplo@empresa.com.br"
           />
         </div>
@@ -1358,7 +1358,7 @@ export default function App() {
             <input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20"
+              className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
               type={showPassword ? 'text' : 'password'}
               placeholder="Mínimo 6 caracteres"
             />
@@ -1376,7 +1376,7 @@ export default function App() {
           <input
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20"
+            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
             type={showPassword ? 'text' : 'password'}
             placeholder="Repita sua senha"
           />

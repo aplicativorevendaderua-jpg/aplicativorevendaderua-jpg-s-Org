@@ -123,12 +123,6 @@ export default function App() {
   const [publicCatalogIsLoading, setPublicCatalogIsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [currentTime, setCurrentTime] = useState(new Date());
-
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   const [cart, setCart] = useState<{ productId: string; variationId?: string; quantity: number }[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -1473,6 +1467,12 @@ export default function App() {
   );
 
   const DashboardPage = () => {
+    const [currentTime, setCurrentTime] = useState(new Date());
+    useEffect(() => {
+      const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+      return () => clearInterval(timer);
+    }, []);
+
     const today = new Date().toLocaleDateString('pt-BR');
     const todayOrders = orders.filter(o => o.date === today);
     const todayTotal = todayOrders.reduce((acc, o) => acc + o.total, 0);

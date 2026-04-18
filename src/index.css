@@ -15,6 +15,25 @@ body {
   background-color: #f8f9fb;
   -webkit-tap-highlight-color: transparent;
   pointer-events: auto !important;
+  user-select: auto !important;
+}
+
+#root {
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 1;
+}
+
+input, textarea, button, select {
+  pointer-events: auto !important;
+  cursor: auto !important;
+  user-select: auto !important;
+}
+
+/* Forçar inputs a serem clicáveis mesmo se houver overlays */
+input[type="text"], input[type="email"], input[type="password"], textarea {
+  position: relative;
+  z-index: 100 !important;
 }
 
 #root {

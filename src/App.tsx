@@ -1209,7 +1209,7 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white">
+      <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white relative z-50">
       <header className="mb-10 text-left">
         <div className="mb-6 inline-flex items-center justify-center w-12 h-12 bg-primary rounded-twelve text-white">
           <ShoppingCart size={24} />
@@ -1319,7 +1319,7 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-background-light">
+      <div className="min-h-screen bg-background-light relative z-50">
       <div className="flex items-center p-4 pb-2 justify-between">
         <button onClick={() => navigate('login')} className="size-12 flex items-center justify-center hover:bg-slate-200/50 rounded-full">
           <ArrowLeft size={24} />
@@ -5514,7 +5514,7 @@ export default function App() {
   const renderPage = () => {
     if (!isConfigured) {
       return (
-        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center relative z-[100]">
           <div className="size-20 bg-red-100 text-red-600 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-red-100/50">
             <AlertCircle size={40} />
           </div>

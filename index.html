@@ -10,24 +10,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap">
   </head>
   <body>
-    <div id="root">
-      <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; color: #666;">
-        <div style="text-align: center;">
-          <div style="width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px;"></div>
-          <p style="font-weight: bold;">Carregando Aplicativo...</p>
-        </div>
-      </div>
-    </div>
-    <style>
-      @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
-    <script>
-      console.log('HTML carregado, iniciando carregamento de scripts...');
-      window.addEventListener('error', function(e) {
-        console.error('Erro detectado no carregamento:', e);
-        document.getElementById('root').innerHTML = '<div style="padding: 20px; color: red;"><h1>Erro crítico: ' + e.message + '</h1><p>Verifique o console para mais detalhes.</p></div>';
-      });
-    </script>
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

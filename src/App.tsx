@@ -71,9 +71,10 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary } from './types';
 import { supabaseService } from './services/supabaseService';
-import { getSupabase } from './lib/supabase';
+import { getSupabase, isSupabaseConfigured } from './lib/supabase';
 
 export default function App() {
+  const [isConfigured] = useState(isSupabaseConfigured());
   const [currentPage, setCurrentPage] = useState<Page>('login');
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -5511,6 +5512,27 @@ export default function App() {
   };
 
   const renderPage = () => {
+    if (!isConfigured) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+          <div className="size-20 bg-red-100 text-red-600 rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-red-100/50">
+            <AlertCircle size={40} />
+          </div>
+          <h1 className="text-2xl font-black text-slate-900 mb-2">Configuração Necessária</h1>
+          <p className="text-slate-500 font-bold mb-8 leading-relaxed">
+            As variáveis de ambiente do Supabase não foram encontradas. 
+            Se você está na Vercel, adicione <strong>VITE_SUPABASE_URL</strong> e <strong>VITE_SUPABASE_ANON_KEY</strong> nas configurações do projeto.
+          </p>
+          <button 
+            onClick={() => window.location.reload()}
+            className="w-full h-14 bg-slate-900 text-white rounded-2xl font-black shadow-lg active:scale-95 transition-all"
+          >
+            Tentar Novamente
+          </button>
+        </div>
+      );
+    }
+
     switch (currentPage) {
       case 'login': return <LoginPage />;
       case 'register': return <RegisterPage />;

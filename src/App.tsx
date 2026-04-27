@@ -67,7 +67,10 @@ import {
   Award,
   Globe,
   ExternalLink,
-  TrendingUp as TrendingIcon
+  TrendingUp as TrendingIcon,
+  Download,
+  Smartphone,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary } from './types';
@@ -158,6 +161,49 @@ export default function App() {
   }>>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [showInstallCard, setShowInstallCard] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+
+  useEffect(() => {
+    // Detectar iOS
+    const isIosDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
+    setIsIOS(isIosDevice);
+
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setShowInstallCard(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    // Se for iOS e não estiver instalado
+    if (isIosDevice && !(window.navigator as any).standalone) {
+      setShowInstallCard(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) {
+      if (isIOS) {
+        alert('Para instalar no iPhone: clique no ícone de compartilhar (quadrado com seta) e selecione "Adicionar à Tela de Início".');
+      }
+      return;
+    }
+    
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    
+    if (outcome === 'accepted') {
+      setDeferredPrompt(null);
+      setShowInstallCard(false);
+    }
+  };
 
   const currentCatalogLink = useMemo(() => {
     if (!publicCatalog?.catalog_slug) return '';
@@ -1721,6 +1767,56 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        {/* Card de Instalação PWA */}
+        <AnimatePresence>
+          {showInstallCard && (
+            <motion.section 
+              initial={{ opacity: 0, height: 0, marginBottom: 0 }}
+              animate={{ opacity: 1, height: 'auto', marginBottom: 24 }}
+              exit={{ opacity: 0, height: 0, marginBottom: 0 }}
+              className="px-6 overflow-hidden"
+            >
+              <div className="p-5 rounded-[32px] bg-gradient-to-br from-primary to-blue-600 text-white relative shadow-xl shadow-primary/30 group">
+                <button 
+                  onClick={() => setShowInstallCard(false)}
+                  className="absolute top-4 right-4 size-8 bg-white/10 rounded-full flex items-center justify-center hover:bg-white/20 transition-all"
+                >
+                  <X size={16} />
+                </button>
+                
+                <div className="flex items-center gap-5 relative z-10">
+                  <div className="size-16 bg-white rounded-3xl flex items-center justify-center text-primary shadow-xl group-hover:rotate-6 transition-transform">
+                    <Smartphone size={32} />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-lg font-black leading-tight mb-1">Instalar Aplicativo</h3>
+                    <p className="text-[11px] font-bold opacity-80 uppercase tracking-widest leading-relaxed">
+                      {isIOS ? 'Acesse rápido pela tela inicial do seu iPhone' : 'Tenha acesso instantâneo e offline no seu aparelho'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex items-center gap-3 relative z-10">
+                  <button 
+                    onClick={handleInstallClick}
+                    className="flex-1 py-4 bg-white text-primary rounded-2xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Download size={16} /> {isIOS ? 'Como Instalar' : 'Instalar Agora'}
+                  </button>
+                  {isIOS && (
+                    <div className="size-12 bg-white/10 rounded-2xl flex items-center justify-center backdrop-blur-md" title="Informação">
+                      <Info size={20} />
+                    </div>
+                  )}
+                </div>
+
+                {/* Efeito de brilho de fundo */}
+                <div className="absolute -right-4 -bottom-4 size-32 bg-white/10 rounded-full blur-2xl"></div>
+              </div>
+            </motion.section>
+          )}
+        </AnimatePresence>
 
         {/* Alertas de Estoque Crítico */}
         {lowStockProducts.length > 0 && (

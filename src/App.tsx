@@ -68,7 +68,8 @@ import {
   Globe,
   ExternalLink,
   Download,
-  Info
+  Info,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary } from './types';

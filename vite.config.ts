@@ -42,6 +42,20 @@ export default defineConfig(({mode}) => {
         }
       })
     ],
+    server: {
+      host: true,
+      port: 3000,
+      strictPort: true,
+      hmr: {
+        clientPort: 443,
+        protocol: 'wss'
+      }
+    },
+    preview: {
+      host: true,
+      port: 3000,
+      strictPort: true
+    },
     base: '/',
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),

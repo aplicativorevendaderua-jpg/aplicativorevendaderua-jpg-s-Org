@@ -170,6 +170,7 @@ export default function App() {
     setIsIOS(isIosDevice);
 
     const handleBeforeInstallPrompt = (e: any) => {
+      console.log('PWA: beforeinstallprompt fired');
       e.preventDefault();
       setDeferredPrompt(e);
       setShowInstallCard(true);
@@ -177,10 +178,17 @@ export default function App() {
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    // Se for iOS e não estiver instalado
+    // Se for iOS e não estiver instalado, OU se o app demorar para disparar o prompt, mostramos um botão manual nos ajustes
     if (isIosDevice && !(window.navigator as any).standalone) {
       setShowInstallCard(true);
     }
+
+    // DEBUG: Forçar exibição do card após 5 segundos se não estiver instalado para teste
+    const timer = setTimeout(() => {
+      if (!window.matchMedia('(display-mode: standalone)').matches && !deferredPrompt) {
+        setShowInstallCard(true);
+      }
+    }, 5000);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -190,7 +198,9 @@ export default function App() {
   const handleInstallClick = async () => {
     if (!deferredPrompt) {
       if (isIOS) {
-        alert('Para instalar no iPhone: clique no ícone de compartilhar (quadrado com seta) e selecione "Adicionar à Tela de Início".');
+        alert('Para instalar no iPhone:\n1. Clique no ícone de compartilhar (quadrado com seta)\n2. Role para baixo e selecione "Adicionar à Tela de Início".');
+      } else {
+        alert('Para instalar no Android/PC:\n1. Clique nos três pontos (menu) do navegador\n2. Selecione "Instalar Aplicativo" ou "Adicionar à Tela Inicial".');
       }
       return;
     }

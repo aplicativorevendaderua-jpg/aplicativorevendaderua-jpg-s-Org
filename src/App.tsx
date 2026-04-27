@@ -66,6 +66,7 @@ import {
   Zap,
   Award,
   Globe,
+  ExternalLink,
   TrendingUp as TrendingIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -157,6 +158,11 @@ export default function App() {
   }>>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+
+  const currentCatalogLink = useMemo(() => {
+    if (!publicCatalog?.catalog_slug) return '';
+    return `${window.location.origin}/#/c/${encodeURIComponent(publicCatalog.catalog_slug)}`;
+  }, [publicCatalog]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -476,6 +482,16 @@ export default function App() {
         </div>
 
         <nav className="flex-1 space-y-2">
+          {currentCatalogLink && (
+            <button
+              onClick={() => window.open(currentCatalogLink, '_blank')}
+              className="flex items-center gap-4 w-full p-4 rounded-2xl transition-all duration-200 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 mb-4 border border-indigo-100/50"
+            >
+              <Globe size={20} strokeWidth={2.5} />
+              <span className="text-xs font-black uppercase tracking-widest text-left">Ver Catálogo</span>
+              <ExternalLink size={14} className="ml-auto opacity-50" />
+            </button>
+          )}
           {navItems.map((item) => {
             const isActive = currentPage === item.id;
             const Icon = item.icon;
@@ -1559,6 +1575,16 @@ export default function App() {
             </div>
           </div>
           <div className="flex gap-2 relative">
+            {currentCatalogLink && (
+              <button 
+                onClick={() => window.open(currentCatalogLink, '_blank')}
+                className="relative p-3 rounded-2xl transition-all bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-2 group"
+                title="Abrir Catálogo Público"
+              >
+                <Globe size={22} className="group-hover:rotate-12 transition-transform" />
+                <span className="hidden sm:inline text-[10px] font-black uppercase tracking-widest">Catálogo</span>
+              </button>
+            )}
             <button 
               onClick={() => setShowNotifications(!showNotifications)}
               className={`relative p-3 rounded-2xl transition-all ${showNotifications ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}

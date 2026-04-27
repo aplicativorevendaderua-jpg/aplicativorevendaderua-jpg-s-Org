@@ -456,6 +456,65 @@ export default function App() {
 
   // --- Components ---
 
+  const Sidebar = () => {
+    const navItems = [
+      { id: 'dashboard', label: 'Painel', icon: LayoutDashboard },
+      { id: 'products', label: 'Produtos', icon: Package },
+      { id: 'orders', label: 'Pedidos', icon: ShoppingCart },
+      { id: 'clients', label: 'Clientes', icon: Users },
+      { id: 'finance', label: 'Finanças', icon: BarChart3 },
+      { id: 'settings', label: 'Ajustes', icon: Settings },
+    ];
+
+    return (
+      <aside className="hidden md:flex flex-col w-64 bg-white border-r border-slate-100 h-screen sticky top-0 p-6 overflow-y-auto">
+        <div className="flex items-center gap-3 mb-10 px-2">
+          <div className="size-10 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/30">
+            <ShoppingCart size={20} />
+          </div>
+          <h1 className="text-xl font-black text-slate-900 tracking-tight">Representante</h1>
+        </div>
+
+        <nav className="flex-1 space-y-2">
+          {navItems.map((item) => {
+            const isActive = currentPage === item.id;
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                onClick={() => navigate(item.id as Page)}
+                className={`
+                  flex items-center gap-4 w-full p-4 rounded-2xl transition-all duration-200 group
+                  ${isActive ? 'bg-primary text-white shadow-xl shadow-primary/20' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'}
+                `}
+              >
+                <Icon size={20} strokeWidth={isActive ? 2.5 : 2} className={isActive ? '' : 'group-hover:scale-110 transition-transform'} />
+                <span className="text-xs font-black uppercase tracking-widest">{item.label}</span>
+                {isActive && <div className="ml-auto size-1.5 bg-white rounded-full" />}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="mt-auto pt-6 border-t border-slate-50">
+          <button 
+            onClick={async () => {
+              try {
+                await getSupabase().auth.signOut();
+              } finally {
+                navigate('login');
+              }
+            }}
+            className="flex items-center gap-4 w-full p-4 rounded-2xl text-red-500 hover:bg-red-50 transition-all group"
+          >
+            <LogOut size={20} />
+            <span className="text-xs font-black uppercase tracking-widest">Sair</span>
+          </button>
+        </div>
+      </aside>
+    );
+  };
+
   const BottomNav = () => {
     const mainItems = [
       { id: 'dashboard', label: 'Painel', icon: LayoutDashboard },
@@ -472,8 +531,8 @@ export default function App() {
     const isMoreActive = moreItems.some(item => currentPage === item.id);
 
     return (
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-lg border-t border-slate-100 px-2 pb-8 pt-3 z-50">
-        <div className="flex items-center justify-between max-w-md mx-auto relative">
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-lg border-t border-slate-100 px-2 pb-8 pt-3 z-50 md:hidden">
+        <div className="flex items-center justify-between max-w-lg mx-auto relative">
           {mainItems.map((item) => {
             const isActive = currentPage === item.id;
             const Icon = item.icon;
@@ -836,7 +895,7 @@ export default function App() {
               <p className="text-sm font-bold text-slate-500 uppercase">Nenhum produto encontrado</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
               {filtered.map(p => (
                 <div 
                   key={p.id} 
@@ -1005,7 +1064,7 @@ export default function App() {
           {checkoutOpen && (
             <div className="fixed inset-0 z-[80] flex items-end justify-center">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setCheckoutOpen(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0" />
                 
                 <div className="overflow-y-auto no-scrollbar flex-1 space-y-6">
@@ -1584,8 +1643,8 @@ export default function App() {
         </header>
 
         {/* KPIs Principais */}
-        <section className="p-6 grid grid-cols-2 gap-4">
-          <div className="col-span-2 p-6 rounded-[32px] bg-slate-900 text-white relative overflow-hidden shadow-xl shadow-slate-200">
+        <section className="p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="col-span-2 md:col-span-2 p-6 rounded-[32px] bg-slate-900 text-white relative overflow-hidden shadow-xl shadow-slate-200">
             <div className="relative z-10">
               <div className="flex justify-between items-start mb-4">
                 <div>
@@ -1694,12 +1753,12 @@ export default function App() {
               Ver Tudo <ChevronRight size={12} />
             </button>
           </div>
-          <div className="space-y-3">
-            {orders.slice(0, 5).map(order => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {orders.slice(0, 6).map(order => (
               <div 
                 key={order.id} 
                 onClick={() => setSelectedOrder(order)}
-                className="p-4 rounded-3xl bg-white border border-slate-100 shadow-sm hover:border-primary/20 transition-all active:scale-[0.98]"
+                className="p-4 rounded-3xl bg-white border border-slate-100 shadow-sm hover:border-primary/20 transition-all active:scale-[0.98] cursor-pointer"
               >
                 <div className="flex justify-between items-start mb-3">
                   <div className="flex gap-3 items-center">
@@ -1821,9 +1880,9 @@ export default function App() {
           </div>
         </section>
 
-        <main className="px-4 space-y-3">
+        <main className="px-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-24">
           {filtered.map(product => (
-            <div key={product.id} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4">
+            <div key={product.id} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4 hover:border-primary/20 transition-all">
               <div className="w-20 h-20 bg-slate-100 rounded-xl overflow-hidden shrink-0">
                 <img src={product.image || 'https://picsum.photos/seed/prod/200/200'} alt={product.name} className="w-full h-full object-cover" />
               </div>
@@ -1873,7 +1932,7 @@ export default function App() {
           {replenishingProduct && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setReplenishingProduct(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl overflow-hidden">
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl overflow-hidden">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1">Reposição de Estoque</h3>
                 <p className="text-xs font-bold text-slate-400 uppercase mb-6">{replenishingProduct.name}</p>
@@ -1920,7 +1979,7 @@ export default function App() {
           {viewingHistory && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setViewingHistory(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-3xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0" />
                 <h3 className="font-black text-lg mb-1">Histórico do Produto</h3>
                 <p className="text-xs font-bold text-slate-400 uppercase mb-6">{viewingHistory.name}</p>
@@ -2141,7 +2200,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-background-light pb-24">
         <Header title={productToEdit ? "Editar Produto" : "Novo Produto"} showBack onBack={() => navigate('products')} />
-        <main className="p-4 space-y-6 max-w-md mx-auto">
+        <main className="p-4 space-y-6 max-w-4xl mx-auto">
           
           {/* SEÇÃO 1: DADOS BÁSICOS */}
           <section className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100 space-y-5">
@@ -2534,9 +2593,9 @@ export default function App() {
           </div>
         </header>
 
-        <main className="px-4 py-4 space-y-4">
+        <main className="px-4 py-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredClients.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-400 opacity-50">
+            <div className="col-span-full flex flex-col items-center justify-center py-20 text-slate-400 opacity-50">
               <Users size={64} strokeWidth={1} />
               <p className="mt-4 font-bold">Nenhum cliente encontrado</p>
             </div>
@@ -2545,7 +2604,7 @@ export default function App() {
               <div 
                 key={client.id} 
                 onClick={() => setSelectedClientForDetails(client)}
-                className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 active:scale-[0.98] transition-all"
+                className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 active:scale-[0.98] transition-all cursor-pointer hover:border-primary/20"
               >
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex gap-4">
@@ -2844,7 +2903,7 @@ export default function App() {
           showBack 
           onBack={() => navigate('clients')} 
         />
-        <main className="p-4 space-y-6 max-w-md mx-auto">
+        <main className="p-4 space-y-6 max-w-4xl mx-auto">
           <section className="space-y-4">
             <div className="space-y-1">
               <label className="text-sm font-black text-slate-700 ml-1 uppercase tracking-widest text-[10px]">Estabelecimento *</label>
@@ -3201,9 +3260,9 @@ export default function App() {
           </div>
         </header>
 
-        <main className="px-4 py-4 flex flex-col gap-4">
+        <main className="px-4 py-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredOrders.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-400 opacity-50">
+            <div className="col-span-full flex flex-col items-center justify-center py-20 text-slate-400 opacity-50">
               <ShoppingCart size={64} strokeWidth={1} />
               <p className="mt-4 font-bold">Nenhum pedido encontrado</p>
             </div>
@@ -3212,7 +3271,7 @@ export default function App() {
               <div 
                 key={order.id} 
                 onClick={() => setSelectedOrder(order)}
-                className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-all"
+                className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-all cursor-pointer hover:border-primary/20"
               >
                 <div className="flex justify-between items-start mb-3">
                   <div className="flex gap-3 items-center">
@@ -4359,7 +4418,7 @@ export default function App() {
       <div className="min-h-screen bg-background-light pb-32">
         <Header title="Financeiro" />
         
-        <main className="p-4 space-y-6 max-w-md mx-auto">
+        <main className="p-4 space-y-6 max-w-4xl mx-auto">
           {/* Filtros de Data */}
           <section className="bg-white p-4 rounded-3xl shadow-sm border border-slate-100 flex items-center gap-3">
             <div className="flex-1 space-y-1">
@@ -4404,7 +4463,7 @@ export default function App() {
           {activeTab === 'overview' && (
             <div className="space-y-6">
               {/* Dashboard de Resumo */}
-              <section className="grid grid-cols-2 gap-4">
+              <section className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-white p-5 rounded-[32px] shadow-sm border border-slate-100 flex flex-col justify-between h-32">
                   <div className="size-10 rounded-2xl bg-green-100 text-green-600 flex items-center justify-center">
                     <TrendingUp size={20} />
@@ -4546,15 +4605,15 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-24">
                 {transactions.length === 0 ? (
-                  <div className="bg-white p-10 rounded-[32px] text-center border border-dashed border-slate-200">
+                  <div className="col-span-full bg-white p-10 rounded-[32px] text-center border border-dashed border-slate-200">
                     <DollarSign size={40} className="mx-auto text-slate-200 mb-2" />
                     <p className="text-xs font-bold text-slate-400 uppercase">Nenhum lançamento manual</p>
                   </div>
                 ) : (
                   transactions.map(t => (
-                    <div key={t.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between group">
+                    <div key={t.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between group hover:border-primary/20 transition-all">
                       <div className="flex items-center gap-3">
                         <div className={`size-10 rounded-xl flex items-center justify-center ${t.type === 'income' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
                           {t.type === 'income' ? <ArrowUpCircle size={20} /> : <ArrowDownCircle size={20} />}
@@ -4970,7 +5029,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-background-light pb-32">
         <Header title="Configurações" />
-        <main className="p-4 space-y-6 max-w-md mx-auto">
+        <main className="p-4 space-y-6 max-w-4xl mx-auto pb-24">
           {/* Perfil do Usuário (Etapa 3) */}
           <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
             <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2">
@@ -5560,7 +5619,7 @@ export default function App() {
 
   return (
     <div 
-      className={`max-w-md mx-auto min-h-screen shadow-2xl relative font-sans transition-colors duration-300 ${userAppConfig.dark_mode ? 'dark bg-slate-900' : 'bg-white'}`}
+      className={`min-h-screen flex flex-col md:flex-row transition-colors duration-300 ${userAppConfig.dark_mode ? 'dark bg-slate-900' : 'bg-slate-50'}`}
       style={{ '--primary': userAppConfig.theme_color } as React.CSSProperties}
     >
       <style>{`
@@ -5572,7 +5631,14 @@ export default function App() {
         .shadow-primary\\/20 { --tw-shadow-color: ${userAppConfig.theme_color}33 !important; }
         .shadow-primary\\/30 { --tw-shadow-color: ${userAppConfig.theme_color}4D !important; }
       `}</style>
-      {renderPage()}
+      
+      {/* Sidebar para Desktop */}
+      {isConfigured && !['login', 'register', 'recover-password', 'verify-email', 'public-catalog'].includes(currentPage) && <Sidebar />}
+
+      {/* Conteúdo Principal */}
+      <div className="flex-1 flex flex-col min-w-0 max-w-7xl mx-auto w-full">
+        {renderPage()}
+      </div>
     </div>
   );
 }

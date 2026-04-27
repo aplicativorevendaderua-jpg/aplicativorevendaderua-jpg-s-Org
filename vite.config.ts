@@ -46,10 +46,10 @@ export default defineConfig(({mode}) => {
       host: true,
       port: 3000,
       strictPort: true,
-      hmr: {
+      hmr: process.env.DISABLE_HMR !== 'true' ? {
         clientPort: 443,
         protocol: 'wss'
-      }
+      } : false
     },
     preview: {
       host: true,
@@ -68,11 +68,6 @@ export default defineConfig(({mode}) => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
-    },
-    server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
-      hmr: process.env.DISABLE_HMR !== 'true',
     },
   };
 });

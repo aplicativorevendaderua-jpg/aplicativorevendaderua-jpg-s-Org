@@ -67,9 +67,7 @@ import {
   Award,
   Globe,
   ExternalLink,
-  TrendingUp as TrendingIcon,
   Download,
-  Smartphone,
   Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';

@@ -17,9 +17,9 @@ export default defineConfig(({mode}) => {
         },
         includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
         manifest: {
-          name: 'Aplicativo B2B - Representante',
-          short_name: 'B2B App',
-          description: 'Sistema de gestão para representantes e catálogo público B2B',
+          name: 'FLUX - Sistema de Vendas e Catálogo Online',
+          short_name: 'FLUX',
+          description: 'FLUX - Sistema de gestão e vendas B2B/B2C',
           theme_color: '#137fec',
           icons: [
             {

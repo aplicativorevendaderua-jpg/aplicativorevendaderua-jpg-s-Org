@@ -635,7 +635,7 @@ export default function App() {
     if (applicableSubtotal === 0) return 0;
 
     if (activePromotion.type === 'percentage') {
-      return (applicableSubtotal * activePromotion.value) / 100;
+      return Number(((applicableSubtotal * activePromotion.value) / 100).toFixed(2));
     }
     return Math.min(activePromotion.value, applicableSubtotal);
   }, [activePromotion, cartWithDetails]);
@@ -648,7 +648,7 @@ export default function App() {
     
     let value = 0;
     if (adj.adjustment_type === 'percentage') {
-      value = (totalAfterPromotion * adj.value) / 100;
+      value = Number(((totalAfterPromotion * adj.value) / 100).toFixed(2));
     } else {
       value = adj.value;
     }
@@ -672,10 +672,10 @@ export default function App() {
     return (
       <aside className="hidden md:flex flex-col w-64 bg-white border-r border-slate-100 h-screen sticky top-0 p-6 overflow-y-auto">
         <div className="flex items-center gap-3 mb-10 px-2">
-          <div className="size-10 bg-primary rounded-xl flex items-center justify-center text-white shadow-lg shadow-primary/30">
-            <ShoppingCart size={20} />
-          </div>
-          <h1 className="text-xl font-black text-slate-900 tracking-tight">Representante</h1>
+          <img src="/logo.png" alt="FLUX" className="h-8 w-auto object-contain" onError={(e) => {
+            (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+          }} />
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight">FLUX</h1>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -980,7 +980,7 @@ export default function App() {
       if (applicableSubtotal === 0) return 0;
 
       if (activePromotion.type === 'percentage') {
-        return (applicableSubtotal * activePromotion.value) / 100;
+        return Number(((applicableSubtotal * activePromotion.value) / 100).toFixed(2));
       }
       return Math.min(activePromotion.value, applicableSubtotal);
     }, [activePromotion, publicCatalogProductsWithDetails]);
@@ -993,7 +993,7 @@ export default function App() {
       
       let value = 0;
       if (adj.adjustment_type === 'percentage') {
-        value = (totalAfterPromotion * adj.value) / 100;
+        value = Number(((totalAfterPromotion * adj.value) / 100).toFixed(2));
       } else {
         value = adj.value;
       }
@@ -1335,7 +1335,7 @@ export default function App() {
             )}
             
             <div className="pt-2 opacity-40 relative z-10">
-               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Aplicativo B2B • Feito para você</p>
+               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">FLUX • Feito para você</p>
             </div>
           </footer>
         </main>
@@ -1894,13 +1894,13 @@ export default function App() {
 
     return (
       <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white relative z-[60] pointer-events-auto">
-      <header className="mb-10 text-left">
-        <div className="mb-6 inline-flex items-center justify-center w-12 h-12 bg-primary rounded-twelve text-white">
-          <ShoppingCart size={24} />
-        </div>
+      <header className="mb-10 text-left flex flex-col">
+        <img src="/logo.png" alt="FLUX" className="h-16 w-auto object-contain object-left mb-6" onError={(e) => {
+          (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+        }} />
         <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">Entrar</h1>
         <p className="text-slate-500 text-base leading-relaxed">
-          Acesse sua conta para gerenciar seus produtos e pedidos.
+          Acesse sua conta no FLUX para gerenciar vendas e produtos.
         </p>
       </header>
       <div className="space-y-5">

@@ -46,7 +46,7 @@ export default defineConfig(({mode}) => {
       host: true,
       port: 3000,
       strictPort: true,
-      hmr: false, // Desativa HMR para evitar erros de WebSocket no preview do Trae
+      hmr: process.env.DISABLE_HMR !== 'true'
     },
     preview: {
       host: true,

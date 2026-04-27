@@ -91,12 +91,37 @@ export interface Order {
   notes?: string;
 }
 
+export interface Promotion {
+  id: string;
+  user_id?: string;
+  name: string;
+  type: 'percentage' | 'fixed';
+  value: number;
+  active: boolean;
+  min_order_value?: number;
+  apply_to: 'all' | 'category' | 'product';
+  target_id?: string;
+  created_at?: string;
+}
+
+export interface PaymentAdjustment {
+  id: string;
+  user_id?: string;
+  method: string;
+  type: 'fee' | 'discount';
+  adjustment_type: 'percentage' | 'fixed';
+  value: number;
+  active: boolean;
+  created_at?: string;
+}
+
 export type Page = 
   | 'login' 
   | 'register' 
   | 'recover-password' 
   | 'verify-email' 
   | 'public-catalog'
+  | 'catalog'
   | 'dashboard' 
   | 'products' 
   | 'product-form' 
@@ -104,11 +129,12 @@ export type Page =
   | 'client-form' 
   | 'orders' 
   | 'order-form' 
-  | 'settings'
-  | 'catalog'
-  | 'cart'
-  | 'checkout'
-  | 'finance';
+  | 'cart' 
+  | 'checkout' 
+  | 'finance' 
+  | 'settings' 
+  | 'profile' 
+  | 'promotions';
 
 export interface Transaction {
   id: string;
@@ -159,6 +185,10 @@ export interface AppSettings {
   currency: string;
   tax_id: string;
   whatsapp_message_template: string;
+  pix_key?: string;
+  instagram?: string;
+  facebook?: string;
+  tiktok?: string;
 }
 
 export interface UserAppConfig {

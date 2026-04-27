@@ -1,7 +1,84 @@
 import { getSupabase } from '../lib/supabase';
-import { Product, Client, Order, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary } from '../types';
+import { Product, Client, Order, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment } from '../types';
 
 export const supabaseService = {
+  // --- PROMOTIONS ---
+  async getPromotions(): Promise<Promotion[]> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('promotions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    
+    if (error) throw error;
+    return data as Promotion[];
+  },
+
+  async upsertPromotion(promotion: Partial<Promotion>): Promise<Promotion> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Não autenticado');
+
+    const { data, error } = await supabase
+      .from('promotions')
+      .upsert({ ...promotion, user_id: user.id, updated_at: new Date().toISOString() })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    return data as Promotion;
+  },
+
+  async deletePromotion(id: string): Promise<void> {
+    const { error } = await getSupabase()
+      .from('promotions')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+  },
+
+  // --- PAYMENT ADJUSTMENTS ---
+  async getPaymentAdjustments(): Promise<PaymentAdjustment[]> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('payment_adjustments')
+      .select('*')
+      .eq('user_id', user.id);
+    
+    if (error) throw error;
+    return data as PaymentAdjustment[];
+  },
+
+  async upsertPaymentAdjustment(adjustment: Partial<PaymentAdjustment>): Promise<PaymentAdjustment> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Não autenticado');
+
+    const { data, error } = await supabase
+      .from('payment_adjustments')
+      .upsert({ ...adjustment, user_id: user.id, updated_at: new Date().toISOString() })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    return data as PaymentAdjustment;
+  },
+
+  async deletePaymentAdjustment(id: string): Promise<void> {
+    const { error } = await getSupabase()
+      .from('payment_adjustments')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+  },
+
   // --- FINANCE ---
   async getFinanceSummary(startDate: string, endDate: string): Promise<FinanceSummary> {
     const supabase = getSupabase();
@@ -266,12 +343,41 @@ export const supabaseService = {
   },
 
   async getPublicCatalogInfo(catalog_slug: string) {
-    const { data, error } = await getSupabase()
-      .rpc('get_public_catalog_info', { catalog_slug })
+    const supabase = getSupabase();
+    const { data: catalog, error: catalogError } = await supabase
+      .from('public_catalogs')
+      .select('user_id')
+      .eq('catalog_slug', catalog_slug)
+      .eq('is_active', true)
       .maybeSingle();
-    if (error) throw error;
-    if (!data) throw new Error('Catálogo não encontrado ou inativo.');
-    return data as { store_name: string; store_logo: string | null; theme_color: string | null };
+
+    if (catalogError) throw catalogError;
+    if (!catalog) throw new Error('Catálogo não encontrado ou inativo.');
+
+    const { data: settings } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('user_id', catalog.user_id)
+      .maybeSingle();
+
+    const { data: config } = await supabase
+      .from('app_config')
+      .select('theme_color')
+      .eq('user_id', catalog.user_id)
+      .maybeSingle();
+
+    return { 
+      store_name: settings?.store_name || 'Catálogo', 
+      store_logo: settings?.store_logo || null, 
+      theme_color: config?.theme_color || null, 
+      store_phone: settings?.store_phone || null, 
+      pix_key: settings?.pix_key || null,
+      store_address: settings?.store_address || null,
+      tax_id: settings?.tax_id || null,
+      instagram: settings?.instagram || null,
+      facebook: settings?.facebook || null,
+      tiktok: settings?.tiktok || null
+    };
   },
 
   async getPublicCatalogProducts(catalog_slug: string) {
@@ -293,19 +399,66 @@ export const supabaseService = {
     }>;
   },
 
+  async getPublicPromotions(catalog_slug: string): Promise<Promotion[]> {
+    const supabase = getSupabase();
+    // 1. Get user_id from slug
+    const { data: catalog } = await supabase
+      .from('public_catalogs')
+      .select('user_id')
+      .eq('catalog_slug', catalog_slug)
+      .eq('is_active', true)
+      .maybeSingle();
+    
+    if (!catalog) return [];
+
+    // 2. Get active promotions
+    const { data, error } = await supabase
+      .from('promotions')
+      .select('*')
+      .eq('user_id', catalog.user_id)
+      .eq('active', true);
+    
+    if (error) throw error;
+    return data as Promotion[];
+  },
+
+  async getPublicPaymentAdjustments(catalog_slug: string): Promise<PaymentAdjustment[]> {
+    const supabase = getSupabase();
+    // 1. Get user_id from slug
+    const { data: catalog } = await supabase
+      .from('public_catalogs')
+      .select('user_id')
+      .eq('catalog_slug', catalog_slug)
+      .eq('is_active', true)
+      .maybeSingle();
+    
+    if (!catalog) return [];
+
+    // 2. Get active adjustments
+    const { data, error } = await supabase
+      .from('payment_adjustments')
+      .select('*')
+      .eq('user_id', catalog.user_id)
+      .eq('active', true);
+    
+    if (error) throw error;
+    return data as PaymentAdjustment[];
+  },
+
   async createPublicOrder(payload: {
     catalog_slug: string;
     customer_name: string;
     customer_phone: string;
     customer_whatsapp: string;
-    customer_rua?: string;
-    customer_numero?: string;
-    customer_bairro?: string;
-    customer_city?: string;
+    customer_rua: string;
+    customer_numero: string;
+    customer_bairro: string;
+    customer_city: string;
     payment_method: string;
     notes: string;
     items: Array<{ product_id: string; quantity: number; variation_id?: string }>;
     should_register_client?: boolean;
+    total?: number;
   }) {
     const { data, error } = await getSupabase().rpc('create_public_order_v2', {
       p_catalog_slug: payload.catalog_slug,
@@ -319,10 +472,11 @@ export const supabaseService = {
       p_payment_method: payload.payment_method,
       p_notes: payload.notes,
       p_items: payload.items,
-      p_should_register_client: payload.should_register_client ?? true
+      p_should_register_client: payload.should_register_client ?? true,
+      p_total: payload.total
     });
     if (error) throw error;
-    return data as string;
+    return data;
   },
 
   async searchPublicClients(catalog_slug: string, query: string) {
@@ -637,6 +791,14 @@ export const supabaseService = {
     return { ...data, price: data.sale_price } as Product;
   },
 
+  async updateProductsAvailability(ids: string[], available: boolean) {
+    const { error } = await getSupabase()
+      .from('products')
+      .update({ available })
+      .in('id', ids);
+    if (error) throw error;
+  },
+
   async deleteProduct(id: string) {
     const { error } = await getSupabase()
       .from('products')
@@ -790,6 +952,7 @@ export const supabaseService = {
       paymentStatus: order.paymentStatus,
       paid_amount: order.paid_amount,
       notes: order.notes,
+      deliveryDate: order.delivery_date ? new Date(order.delivery_date).toLocaleDateString('pt-BR') : undefined,
       items: (order.order_items || []).map((item: any) => ({
         productId: item.product_id,
         productName: item.products?.name || 'Produto',
@@ -851,15 +1014,21 @@ export const supabaseService = {
   async createOrder(order: Omit<Order, 'id' | 'date'>, items: { productId: string; quantity: number; price: number; variationId?: string; variationName?: string }[]) {
     const supabase = getSupabase();
     const { data: { user } } = await supabase.auth.getUser();
+    
+    // Entrega sempre amanhã
+    const deliveryDate = new Date();
+    deliveryDate.setDate(deliveryDate.getDate() + 1);
+
     const { data: orderData, error: orderError } = await supabase
       .from('orders')
       .insert({
         user_id: user?.id,
         client_id: order.clientId,
         total: order.total,
-        status: order.status,
+        status: 'confirmed', // Sempre entra como aceito
         payment_method: (order as any).paymentMethod,
-        notes: (order as any).notes
+        notes: (order as any).notes,
+        delivery_date: deliveryDate.toISOString()
       })
       .select()
       .single();
@@ -885,6 +1054,8 @@ export const supabaseService = {
       ...orderData,
       clientId: orderData.client_id,
       date: new Date(orderData.created_at).toLocaleDateString('pt-BR'),
+      deliveryDate: deliveryDate.toLocaleDateString('pt-BR'),
+      status: 'confirmed',
       items: items
     };
   },

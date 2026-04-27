@@ -29,7 +29,6 @@ import {
   Edit2,
   Send,
   MoreVertical,
-  Filter,
   Store,
   Utensils,
   Coffee,
@@ -51,8 +50,6 @@ import {
   User,
   Shield,
   Building2,
-  HelpCircle,
-  PackagePlus,
   ChevronLeft,
   BarChart3,
   TrendingUp,
@@ -68,13 +65,85 @@ import {
   Globe,
   ExternalLink,
   Download,
-  Info,
-  X
+  Tag,
+  Percent,
+  Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary } from './types';
+import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment } from './types';
 import { supabaseService } from './services/supabaseService';
 import { getSupabase, isSupabaseConfigured } from './lib/supabase';
+
+function generateBoletoLine(amount: number) {
+  const valueStr = Math.floor(amount * 100).toString().padStart(10, '0');
+  return `34191.09008 63396.832742 71325.430006 1 ${valueStr}`;
+}
+
+function generatePixPayload(pixKey: string, amount: number, merchantName: string = 'LOJA', merchantCity: string = 'CIDADE', txId: string = '***') {
+  const sanitize = (str: string) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9 ]/g, "").substring(0, 25);
+  merchantName = sanitize(merchantName).toUpperCase() || 'LOJA';
+  merchantCity = sanitize(merchantCity).toUpperCase() || 'CIDADE';
+
+  // Sanitize PIX Key
+  let cleanKey = pixKey.trim();
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanKey);
+  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cleanKey);
+  
+  if (!isEmail && !isUUID) {
+    const numbers = cleanKey.replace(/\D/g, '');
+    if (numbers.length === 11) {
+      if (cleanKey.includes('(') || cleanKey.includes(')')) {
+        cleanKey = '+55' + numbers;
+      } else {
+        cleanKey = numbers; 
+      }
+    } else if (numbers.length === 14) {
+      cleanKey = numbers;
+    } else if (numbers.length === 12 || numbers.length === 13) {
+      cleanKey = '+' + numbers;
+    } else {
+      cleanKey = cleanKey.replace(/\s/g, '');
+    }
+  }
+
+  const amountStr = amount.toFixed(2);
+  const formatField = (id: string, value: string) => {
+    const len = value.length.toString().padStart(2, '0');
+    return `${id}${len}${value}`;
+  };
+
+  const gui = formatField('00', 'br.gov.bcb.pix');
+  const key = formatField('01', cleanKey);
+  const merchantAccountInfo = formatField('26', gui + key);
+  const additionalData = formatField('62', formatField('05', txId));
+
+  let payload = [
+    formatField('00', '01'),
+    merchantAccountInfo,
+    formatField('52', '0000'),
+    formatField('53', '0986'),
+    formatField('54', amountStr),
+    formatField('58', 'BR'),
+    formatField('59', merchantName),
+    formatField('60', merchantCity),
+    additionalData,
+    '6304'
+  ].join('');
+
+  let crc = 0xFFFF;
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= (payload.charCodeAt(i) << 8);
+    for (let j = 0; j < 8; j++) {
+      if ((crc & 0x8000) !== 0) {
+        crc = (crc << 1) ^ 0x1021;
+      } else {
+        crc = (crc << 1);
+      }
+      crc &= 0xFFFF;
+    }
+  }
+  return payload + crc.toString(16).toUpperCase().padStart(4, '0');
+}
 
 export default function App() {
   const [isConfigured] = useState(isSupabaseConfigured());
@@ -86,6 +155,8 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
+  const [paymentAdjustments, setPaymentAdjustments] = useState<PaymentAdjustment[]>([]);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [appSettings, setAppSettings] = useState<AppSettings>({
     store_name: 'Minha Loja B2B',
@@ -120,7 +191,7 @@ export default function App() {
   });
   const [publicCatalog, setPublicCatalog] = useState<PublicCatalog | null>(null);
   const [publicCatalogSlug, setPublicCatalogSlug] = useState<string | null>(null);
-  const [publicCatalogInfo, setPublicCatalogInfo] = useState<{ store_name: string; store_logo: string | null; theme_color: string | null } | null>(null);
+  const [publicCatalogInfo, setPublicCatalogInfo] = useState<{ store_name: string; store_logo: string | null; theme_color: string | null; store_phone?: string | null; store_address?: string | null; tax_id?: string | null; instagram?: string | null; facebook?: string | null; tiktok?: string | null; pix_key?: string | null } | null>(null);
   const [publicCatalogProducts, setPublicCatalogProducts] = useState<Array<{ id: string; name: string; category: string; sale_price: number; image: string; description: string; available: boolean; stock: number }>>([]);
   const [publicCatalogSearch, setPublicCatalogSearch] = useState('');
   const [publicCatalogIsLoading, setPublicCatalogIsLoading] = useState(false);
@@ -131,6 +202,7 @@ export default function App() {
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
   const [selectedProductForVariation, setSelectedProductForVariation] = useState<Product | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [orderToEdit, setOrderToEdit] = useState<Order | null>(null);
   const [orderFilter, setOrderFilter] = useState<OrderStatus | 'all'>('all');
   const [orderSearch, setOrderSearch] = useState('');
   const [clientSearch, setClientSearch] = useState('');
@@ -141,10 +213,8 @@ export default function App() {
   const [clientToEdit, setClientToEdit] = useState<Client | null>(null);
   const [newClientPlaceholder, setNewClientPlaceholder] = useState<string | null>(null);
   const [productToEdit, setProductToEdit] = useState<Product | null>(null);
-  const [orderToEdit, setOrderToEdit] = useState<Order | null>(null);
   const [replenishingProduct, setReplenishingProduct] = useState<Product | null>(null);
   const [viewingHistory, setViewingHistory] = useState<Product | null>(null);
-  const [confirmingDelivery, setConfirmingDelivery] = useState<Order | null>(null);
   const [confirmingPayment, setConfirmingPayment] = useState<Order | null>(null);
   const [paymentAmount, setPaymentAmount] = useState<string>('');
   const [isTotalPayment, setIsTotalPayment] = useState<boolean>(true);
@@ -161,37 +231,34 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [showInstallCard, setShowInstallCard] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
+  const [showInstallCard, setShowInstallCard] = useState(true);
 
   useEffect(() => {
     // Detectar iOS
     const isIosDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
     setIsIOS(isIosDevice);
 
-    const handleBeforeInstallPrompt = (e: any) => {
+    window.addEventListener('beforeinstallprompt', (e: any) => {
       console.log('PWA: beforeinstallprompt fired');
       e.preventDefault();
       setDeferredPrompt(e);
-      setShowInstallCard(true);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    });
 
     // Se for iOS e não estiver instalado, OU se o app demorar para disparar o prompt, mostramos um botão manual nos ajustes
     if (isIosDevice && !(window.navigator as any).standalone) {
-      setShowInstallCard(true);
+      // Logic for iOS install manual display if needed
     }
 
     // DEBUG: Forçar exibição do card após 5 segundos se não estiver instalado para teste
     const timer = setTimeout(() => {
       if (!window.matchMedia('(display-mode: standalone)').matches && !deferredPrompt) {
-        setShowInstallCard(true);
+        console.log('App not installed yet');
       }
     }, 5000);
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      clearTimeout(timer);
     };
   }, []);
 
@@ -298,8 +365,8 @@ export default function App() {
               console.error('Error fetching details for notification:', e);
             }
 
-            const notification = {
-              id: Math.random().toString(36).substr(2, 9),
+            const notification: any = {
+              id: Math.random().toString(36).substring(2, 9),
               title: `Pedido de ${customerName}`,
               message: `Olá ${userProfile.full_name || 'Representante'}, você tem um novo pedido, venha conferir.`,
               date: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }),
@@ -307,10 +374,10 @@ export default function App() {
               orderId: newOrder.id,
               items: orderItems,
               total: Number(newOrder.total),
-              isNewClient: !newOrder.client_id // Se client_id for nulo no payload inicial, pode ser um novo cliente sendo processado
+              isNewClient: !newOrder.client_id
             };
             
-            setNotifications(prev => [notification, ...prev]);
+            setNotifications((prev: any[]) => [notification, ...prev]);
             fetchData();
           }
         }
@@ -323,7 +390,7 @@ export default function App() {
   }, [userProfile.id]);
 
   const selectedClient = useMemo(() => 
-    clients.find(c => c.id === selectedClientId) || null
+    clients.find((c: Client) => c.id === selectedClientId) || null
   , [clients, selectedClientId]);
 
   const fetchDataInFlightRef = useRef(false);
@@ -332,22 +399,46 @@ export default function App() {
     fetchDataInFlightRef.current = true;
     setIsLoading(true);
     try {
-      const [productsData, clientsData, ordersData, categoriesData, settingsData, appConfigData, backupsData, profileData, publicCatalogData] = await Promise.all([
-        supabaseService.getProducts(),
-        supabaseService.getClients(),
-        supabaseService.getOrders(),
-        supabaseService.getCategories(),
-        supabaseService.getSettings(),
-        supabaseService.getAppConfig(),
-        supabaseService.getBackups(),
-        supabaseService.getProfile(),
-        supabaseService.getPublicCatalog()
+      // Usar catch individual para cada promise para evitar que uma falha trave todo o app
+      const [
+        productsData, 
+        clientsData, 
+        ordersData, 
+        categoriesData, 
+        settingsData, 
+        appConfigData, 
+        backupsData, 
+        profileData, 
+        publicCatalogData, 
+        promotionsData, 
+        adjustmentsData
+      ] = await Promise.all([
+        supabaseService.getProducts().catch(() => [] as Product[]),
+        supabaseService.getClients().catch(() => [] as Client[]),
+        supabaseService.getOrders().catch(() => [] as Order[]),
+        supabaseService.getCategories().catch(() => [] as Category[]),
+        supabaseService.getSettings().catch(() => null),
+        supabaseService.getAppConfig().catch(() => null),
+        supabaseService.getBackups().catch(() => [] as BackupEntry[]),
+        supabaseService.getProfile().catch(() => null),
+        supabaseService.getPublicCatalog().catch(() => null),
+        supabaseService.getPromotions().catch((err: any) => {
+          console.warn('Tabela promotions não encontrada ou erro ao carregar:', err.message || err);
+          return [] as Promotion[];
+        }),
+        supabaseService.getPaymentAdjustments().catch((err: any) => {
+          console.warn('Tabela payment_adjustments não encontrada ou erro ao carregar:', err.message || err);
+          return [] as PaymentAdjustment[];
+        })
       ]);
+
       setProducts(productsData);
       setClients(clientsData);
       setOrders(ordersData);
       setCategories(categoriesData);
       setBackups(backupsData);
+      setPromotions(promotionsData);
+      setPaymentAdjustments(adjustmentsData);
       if (settingsData) setAppSettings(settingsData);
       if (appConfigData) setUserAppConfig(appConfigData);
       if (profileData) setUserProfile(profileData);
@@ -375,12 +466,16 @@ export default function App() {
     setPublicCatalogIsLoading(true);
     setPublicCatalogSlug(slug);
     try {
-      const [info, products] = await Promise.all([
+      const [info, products, promotionsData, adjustmentsData] = await Promise.all([
         supabaseService.getPublicCatalogInfo(slug),
-        supabaseService.getPublicCatalogProducts(slug)
+        supabaseService.getPublicCatalogProducts(slug),
+        supabaseService.getPublicPromotions(slug).catch(() => [] as Promotion[]),
+        supabaseService.getPublicPaymentAdjustments(slug).catch(() => [] as PaymentAdjustment[])
       ]);
       setPublicCatalogInfo(info);
       setPublicCatalogProducts(products);
+      setPromotions(promotionsData);
+      setPaymentAdjustments(adjustmentsData);
     } catch (error: any) {
       console.error(error);
       const message = error?.message ? String(error.message) : 'Erro desconhecido';
@@ -464,34 +559,42 @@ export default function App() {
     setSelectedProductForVariation(null);
   };
 
-  const removeFromCart = (productId: string, variationId?: string) => {
-    setCart(prev => prev.filter(item => !(item.productId === productId && item.variationId === variationId)));
+
+
+  const cartItemsCount = useMemo(() => {
+    return cart.reduce((acc: number, item: { quantity: number }) => acc + item.quantity, 0);
+  }, [cart]);
+
+  const updateCartQuantity = (productId: string, quantity: number, variationId?: string) => {
+    setCart((prev: Array<{ productId: string; variationId?: string; quantity: number }>) => {
+      const existing = prev.find(i => i.productId === productId && i.variationId === variationId);
+      if (existing) {
+        if (quantity <= 0) return prev.filter(i => !(i.productId === productId && i.variationId === variationId));
+        return prev.map(i => (i.productId === productId && i.variationId === variationId) ? { ...i, quantity } : i);
+      }
+      if (quantity <= 0) return prev;
+      return [...prev, { productId, variationId, quantity }];
+    });
   };
 
-  const updateCartQuantity = (productId: string, newQuantity: number, variationId?: string) => {
-    if (newQuantity <= 0) {
-      removeFromCart(productId, variationId);
-      return;
-    }
-    setCart(prev => prev.map(item => 
-      (item.productId === productId && item.variationId === variationId)
-        ? { ...item, quantity: newQuantity } 
-        : item
-    ));
+  const removeFromCart = (productId: string, variationId?: string) => {
+    setCart((prev: Array<{ productId: string; variationId?: string; quantity: number }>) => prev.filter(item => !(item.productId === productId && item.variationId === variationId)));
   };
+
+  const clearCart = () => setCart([]);
 
   const cartWithDetails = useMemo(() => {
-    return cart.map(item => {
-      const product = products.find(p => p.id === item.productId);
+    return cart.map((item: { productId: string; variationId?: string; quantity: number }) => {
+      const product = products.find((p: Product) => p.id === item.productId);
       if (!product) return null;
       
-      let price = product.price;
+      let price = product.sale_price;
       let variationName = '';
       
       if (item.variationId && product.variations) {
-        const variation = product.variations.find(v => v.id === item.variationId);
+        const variation = product.variations.find((v: ProductVariation) => v.id === item.variationId);
         if (variation) {
-          price += variation.additional_price;
+          price += (variation.additional_price || 0);
           variationName = `${variation.name}: ${variation.value}`;
         }
       }
@@ -504,16 +607,54 @@ export default function App() {
         quantity: item.quantity,
         total: price * item.quantity
       };
-    }).filter((item): item is (Product & { variationId?: string; variationName: string; quantity: number; total: number }) => item !== null);
+    }).filter((item): item is (Product & { variationId?: string; variationName: string; quantity: number; total: number; price: number }) => item !== null);
   }, [cart, products]);
 
-  const cartTotal = useMemo(() => {
-    return cartWithDetails.reduce((acc, item) => acc + item.total, 0);
+  const cartSubtotal = useMemo(() => {
+    return cartWithDetails.reduce((acc: number, item: { total: number }) => acc + item.total, 0);
   }, [cartWithDetails]);
 
-  const cartItemsCount = useMemo(() => {
-    return cart.reduce((acc, item) => acc + item.quantity, 0);
-  }, [cart]);
+  const activePromotion = useMemo(() => {
+    // Busca a melhor promoção ativa (por enquanto pega a primeira)
+    return promotions.find((p: Promotion) => p.active && cartSubtotal >= (p.min_order_value || 0)) || null;
+  }, [promotions, cartSubtotal]);
+
+  const promotionDiscount = useMemo(() => {
+    if (!activePromotion) return 0;
+    
+    let applicableSubtotal = 0;
+    cartWithDetails.forEach((item: any) => {
+      let applies = false;
+      if (!activePromotion.apply_to || activePromotion.apply_to === 'all') applies = true;
+      else if (activePromotion.apply_to === 'category' && item.category === activePromotion.target_id) applies = true;
+      else if (activePromotion.apply_to === 'product' && item.id === activePromotion.target_id) applies = true;
+      
+      if (applies) applicableSubtotal += item.total;
+    });
+
+    if (applicableSubtotal === 0) return 0;
+
+    if (activePromotion.type === 'percentage') {
+      return (applicableSubtotal * activePromotion.value) / 100;
+    }
+    return Math.min(activePromotion.value, applicableSubtotal);
+  }, [activePromotion, cartWithDetails]);
+
+  const totalAfterPromotion = useMemo(() => Math.max(0, cartSubtotal - promotionDiscount), [cartSubtotal, promotionDiscount]);
+
+  const getPaymentAdjustment = (method: string) => {
+    const adj = paymentAdjustments.find((a: PaymentAdjustment) => a.active && a.method === method);
+    if (!adj) return 0;
+    
+    let value = 0;
+    if (adj.adjustment_type === 'percentage') {
+      value = (totalAfterPromotion * adj.value) / 100;
+    } else {
+      value = adj.value;
+    }
+    
+    return adj.type === 'fee' ? value : -value;
+  };
 
   // --- Components ---
 
@@ -523,6 +664,7 @@ export default function App() {
       { id: 'products', label: 'Produtos', icon: Package },
       { id: 'orders', label: 'Pedidos', icon: ShoppingCart },
       { id: 'clients', label: 'Clientes', icon: Users },
+      { id: 'promotions', label: 'Promoções', icon: Tag },
       { id: 'finance', label: 'Finanças', icon: BarChart3 },
       { id: 'settings', label: 'Ajustes', icon: Settings },
     ];
@@ -595,6 +737,7 @@ export default function App() {
 
     const moreItems = [
       { id: 'clients', label: 'Clientes', icon: Users },
+      { id: 'promotions', label: 'Promoções', icon: Tag },
       { id: 'finance', label: 'Finanças', icon: BarChart3 },
       { id: 'settings', label: 'Ajustes', icon: Settings },
     ];
@@ -749,6 +892,7 @@ export default function App() {
     const [shouldRegisterClient, setShouldRegisterClient] = useState(true);
     const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
     const [selectedProductForVar, setSelectedProductForVar] = useState<any | null>(null);
+    const [completedOrder, setCompletedOrder] = useState<any>(null);
 
     // Efeito para busca de cliente (Autocomplete Público)
     useEffect(() => {
@@ -812,9 +956,53 @@ export default function App() {
       }).filter(item => item !== null);
     }, [publicCart, publicCatalogProducts]);
 
-    const cartTotal = useMemo(() => {
+    const cartSubtotal = useMemo(() => {
       return publicCatalogProductsWithDetails.reduce((acc, item: any) => acc + item.total, 0);
     }, [publicCatalogProductsWithDetails]);
+
+    const activePromotion = useMemo(() => {
+      return promotions.find(p => p.active && cartSubtotal >= (p.min_order_value || 0)) || null;
+    }, [promotions, cartSubtotal]);
+
+    const promotionDiscount = useMemo(() => {
+      if (!activePromotion) return 0;
+      
+      let applicableSubtotal = 0;
+      publicCatalogProductsWithDetails.forEach((item: any) => {
+        let applies = false;
+        if (!activePromotion.apply_to || activePromotion.apply_to === 'all') applies = true;
+        else if (activePromotion.apply_to === 'category' && item.category === activePromotion.target_id) applies = true;
+        else if (activePromotion.apply_to === 'product' && item.id === activePromotion.target_id) applies = true;
+        
+        if (applies) applicableSubtotal += item.total;
+      });
+
+      if (applicableSubtotal === 0) return 0;
+
+      if (activePromotion.type === 'percentage') {
+        return (applicableSubtotal * activePromotion.value) / 100;
+      }
+      return Math.min(activePromotion.value, applicableSubtotal);
+    }, [activePromotion, publicCatalogProductsWithDetails]);
+
+    const totalAfterPromotion = useMemo(() => Math.max(0, cartSubtotal - promotionDiscount), [cartSubtotal, promotionDiscount]);
+
+    const getPublicPaymentAdjustment = (method: string) => {
+      const adj = paymentAdjustments.find((a: PaymentAdjustment) => a.active && a.method === method);
+      if (!adj) return 0;
+      
+      let value = 0;
+      if (adj.adjustment_type === 'percentage') {
+        value = (totalAfterPromotion * adj.value) / 100;
+      } else {
+        value = adj.value;
+      }
+      
+      return adj.type === 'fee' ? value : -value;
+    };
+
+    const paymentAdjustment = useMemo(() => getPublicPaymentAdjustment(paymentMethod), [paymentMethod, totalAfterPromotion, paymentAdjustments]);
+    const cartTotal = useMemo(() => Math.max(0, totalAfterPromotion + paymentAdjustment), [totalAfterPromotion, paymentAdjustment]);
 
     const publicCategories = useMemo(() => {
       const cats = new Set(publicCatalogProducts.map(p => p.category));
@@ -858,6 +1046,8 @@ export default function App() {
           variation_id: i.variationId,
           quantity: i.quantity 
         }));
+        
+        // 1. Salvar no banco (isso já dispara notificação interna via realtime)
         const orderId = await supabaseService.createPublicOrder({
           catalog_slug: publicCatalogSlug,
           customer_name: customerName.trim(),
@@ -868,13 +1058,35 @@ export default function App() {
           customer_bairro: customerBairro.trim(),
           customer_city: customerCity.trim(),
           payment_method: paymentMethod,
-          notes: customerNotes.trim(),
+          notes: `${customerNotes.trim()}\nPromoção: ${activePromotion?.name || 'Nenhuma'} | Ajuste: R$ ${paymentAdjustment.toFixed(2)}`,
           items,
-          should_register_client: shouldRegisterClient
+          should_register_client: shouldRegisterClient,
+          total: cartTotal
         });
+
+        // 2. Salvar dados para o Comprovante (Recibo)
+        const storePhone = (publicCatalogInfo as any)?.store_phone || '';
+        const receiptData = {
+          orderId,
+          storeName: publicCatalogInfo?.store_name || 'Catálogo',
+          storePhone,
+          date: new Date().toLocaleString('pt-BR'),
+          customerName: customerName.trim(),
+          customerContact: customerWhatsApp.trim() || customerPhone.trim(),
+          address: customerRua ? `${customerRua.trim()}, ${customerNumero.trim()} - ${customerBairro.trim()}, ${customerCity.trim()}` : null,
+          items: publicCatalogProductsWithDetails.map((i: any) => ({...i})),
+          paymentMethod,
+          paymentAdjustment,
+          promotionDiscount,
+          cartSubtotal,
+          cartTotal,
+          notes: customerNotes.trim(),
+          pixKey: (publicCatalogInfo as any)?.pix_key || null
+        };
+
+        setCompletedOrder(receiptData);
         setPublicCart([]);
         setCheckoutOpen(false);
-        alert(`Pedido enviado com sucesso! Aguarde o contato da loja.`);
       } catch (error: any) {
         alert('Erro ao criar pedido: ' + (error.message || 'Erro desconhecido'));
       } finally {
@@ -885,7 +1097,7 @@ export default function App() {
     const filtered = useMemo(() => {
       const q = publicCatalogSearch.toLowerCase();
       return publicCatalogProducts.filter(p => {
-        const matchesSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
+        const matchesSearch = (p.name?.toLowerCase() || '').includes(q) || (p.category?.toLowerCase() || '').includes(q);
         const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
         return matchesSearch && matchesCategory;
       });
@@ -893,36 +1105,38 @@ export default function App() {
 
     return (
       <div className={`min-h-screen bg-background-light transition-all duration-300 ${cartCount > 0 ? 'pb-36' : 'pb-10'}`}>
-        <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-4 flex items-center justify-between">
-          <button
-            onClick={() => {
-              window.location.hash = '';
-              navigate('login');
-            }}
-            className="p-2 hover:bg-slate-100 rounded-full transition-colors"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <h1 className="text-lg font-black tracking-tight text-center flex-1">
-            {publicCatalogInfo?.store_name || 'Catálogo'}
-          </h1>
-          <div className="w-10" />
+        <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-4 flex items-center justify-center">
+          <div className="w-full max-w-3xl flex items-center justify-between">
+            <button
+              onClick={() => {
+                window.location.hash = '';
+                navigate('login');
+              }}
+              className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+            >
+              <ChevronLeft size={20} />
+            </button>
+            <h1 className="text-lg font-black tracking-tight text-center flex-1">
+              {publicCatalogInfo?.store_name || 'Catálogo'}
+            </h1>
+            <div className="w-10" />
+          </div>
         </header>
 
-        <main className="p-4 space-y-4">
-          <div className="bg-white rounded-3xl p-4 shadow-sm border border-slate-200">
-            <div className="flex items-center gap-3">
+        <main className="p-4 space-y-6 max-w-3xl mx-auto">
+          <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
+            <div className="flex flex-col items-center text-center gap-3">
               {publicCatalogInfo?.store_logo ? (
-                <img src={publicCatalogInfo.store_logo} alt="" className="size-12 rounded-2xl object-cover border border-slate-100" />
+                <img src={publicCatalogInfo.store_logo} alt="" className="size-20 rounded-2xl object-cover border border-slate-100 shadow-sm" />
               ) : (
-                <div className="size-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center border border-primary/10">
-                  <Store size={22} />
+                <div className="size-20 rounded-2xl bg-primary/10 text-primary flex items-center justify-center border border-primary/10">
+                  <Store size={32} />
                 </div>
               )}
               <div className="min-w-0">
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Loja Online</p>
-                <p className="font-black text-slate-900 truncate">{publicCatalogInfo?.store_name || 'Catálogo'}</p>
-                <p className="text-[10px] font-bold text-slate-400 truncate">Siga-nos para novidades</p>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Loja Online</p>
+                <p className="font-black text-xl text-slate-900 truncate">{publicCatalogInfo?.store_name || 'Catálogo'}</p>
+                <p className="text-xs font-bold text-slate-400 truncate mt-1">Siga-nos para novidades</p>
               </div>
             </div>
           </div>
@@ -937,8 +1151,42 @@ export default function App() {
             />
           </div>
 
+          {promotions.filter(p => p.active).length > 0 && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-black uppercase tracking-widest text-primary flex items-center md:justify-center gap-2 px-1">
+                <Tag size={16} /> Promoções
+              </h3>
+              <div className="flex gap-3 md:justify-center overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 md:mx-0 md:px-0">
+                {promotions.filter(p => p.active).map(p => (
+                  <div key={p.id} className="min-w-[240px] bg-indigo-50 border border-indigo-100 rounded-2xl p-4 shrink-0 flex items-start gap-3 relative overflow-hidden">
+                    <div className="absolute -right-4 -bottom-4 text-indigo-100 opacity-50">
+                      <Percent size={80} />
+                    </div>
+                    <div className="size-10 bg-indigo-100 rounded-xl flex flex-col items-center justify-center text-indigo-600 relative z-10 shrink-0">
+                      <Tag size={20} />
+                    </div>
+                    <div className="relative z-10">
+                      <p className="font-black text-indigo-900 text-sm leading-tight mb-1">{p.name}</p>
+                      <p className="text-[10px] font-bold text-indigo-700 uppercase">
+                        {p.type === 'percentage' ? `${p.value}% OFF` : `R$ ${p.value.toFixed(2)} OFF`}
+                        {p.apply_to === 'category' ? ` em ${p.target_id}` : ''}
+                        {p.apply_to === 'product' ? ` em produtos selecionados` : ''}
+                        {p.apply_to === 'all' || !p.apply_to ? ` em toda a loja` : ''}
+                      </p>
+                      {p.min_order_value > 0 && (
+                        <p className="text-[9px] font-bold text-indigo-500 uppercase mt-1">
+                          Acima de R$ {p.min_order_value.toLocaleString('pt-BR')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4">
+            <div className="flex md:flex-wrap md:justify-center gap-2 overflow-x-auto no-scrollbar pb-2 -mx-4 px-4 md:mx-0 md:px-0">
               {publicCategories.map(cat => (
                 <button
                   key={cat}
@@ -966,27 +1214,29 @@ export default function App() {
               <p className="text-sm font-bold text-slate-500 uppercase">Nenhum produto encontrado</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 md:gap-6">
               {filtered.map(p => (
                 <div 
                   key={p.id} 
                   onClick={() => setSelectedProductForVar(p)}
                   className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-200 flex flex-col cursor-pointer active:scale-[0.98] transition-all"
                 >
-                  <div className="relative aspect-square">
-                    <img src={p.image || 'https://picsum.photos/seed/public/400/400'} alt={p.name} className="w-full h-full object-cover" />
+                  <div className="relative aspect-square w-full bg-slate-100 overflow-hidden border-b border-slate-100">
+                    <img src={p.image || 'https://picsum.photos/seed/public/500/500'} alt={p.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                     {p.stock <= 0 && (
                       <div className="absolute inset-0 bg-white/60 backdrop-blur-[2px] flex items-center justify-center p-4">
                         <span className="bg-red-500 text-white text-[10px] font-black uppercase px-3 py-1.5 rounded-full shadow-lg">Esgotado</span>
                       </div>
                     )}
                   </div>
-                  <div className="p-4 flex-1 flex flex-col">
+                  <div className="p-4 flex-1 flex flex-col items-center text-center">
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">{p.category}</p>
-                    <h3 className="font-black text-slate-900 leading-tight line-clamp-2 text-sm mb-1">{p.name}</h3>
+                    <div className="min-h-[2.5rem] flex items-center justify-center w-full mb-1">
+                      <h3 className="font-black text-slate-900 leading-tight line-clamp-2 text-sm">{p.name}</h3>
+                    </div>
                     
                     {/* Unidade e Preço Unitário */}
-                    <div className="flex items-center gap-1.5 mb-2">
+                    <div className="flex flex-col items-center gap-1 mb-2">
                       <span className="text-[10px] font-black bg-slate-100 text-slate-500 px-2 py-0.5 rounded-md uppercase">
                         {p.unidade_medida || 'UN'}
                       </span>
@@ -997,17 +1247,17 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="mt-auto pt-2 flex items-center justify-between">
-                      <p className="text-primary font-black text-base">R$ {Number(p.sale_price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                    <div className="mt-auto pt-3 flex flex-col items-center gap-2 w-full">
+                      <p className="text-primary font-black text-lg">R$ {Number(p.sale_price || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           addToPublicCart(p);
                         }}
                         disabled={p.stock <= 0}
-                        className="size-10 rounded-2xl bg-slate-900 text-white flex items-center justify-center active:scale-90 transition-all disabled:opacity-20 shadow-lg shadow-slate-900/20"
+                        className="w-full h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-20 shadow-lg shadow-slate-900/20 text-xs font-black uppercase tracking-widest"
                       >
-                        <Plus size={20} />
+                        <Plus size={16} /> Adicionar
                       </button>
                     </div>
                   </div>
@@ -1015,21 +1265,93 @@ export default function App() {
               ))}
             </div>
           )}
-        </main>
 
+          {/* Footer do Catálogo */}
+          <footer className="mt-12 mb-8 bg-white rounded-[2rem] p-8 md:p-10 shadow-sm border border-slate-200 flex flex-col items-center text-center space-y-8 relative overflow-hidden">
+            {/* Decoração sutil no fundo */}
+            <div className="absolute -top-24 -right-24 size-48 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="absolute -bottom-24 -left-24 size-48 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
+
+            {/* Cabeçalho do Footer (Logo e Nome) */}
+            <div className="space-y-4 relative z-10">
+              {publicCatalogInfo?.store_logo ? (
+                <img src={publicCatalogInfo.store_logo} alt="Logo" className="size-16 object-cover rounded-2xl shadow-sm mx-auto border border-slate-100" />
+              ) : (
+                <div className="size-16 bg-slate-50 text-primary rounded-2xl flex items-center justify-center mx-auto shadow-sm border border-slate-100">
+                  <Store size={32} />
+                </div>
+              )}
+              <div>
+                <h2 className="font-black text-slate-900 text-xl tracking-tight">{publicCatalogInfo?.store_name || 'Catálogo Online'}</h2>
+                {publicCatalogInfo?.tax_id && (
+                  <p className="text-[10px] font-bold text-slate-400 mt-1.5 uppercase tracking-widest">CNPJ/CPF: {publicCatalogInfo.tax_id}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="w-12 h-1 bg-slate-100 rounded-full mx-auto relative z-10"></div>
+
+            {/* Informações de Contato */}
+            {(publicCatalogInfo?.store_phone || publicCatalogInfo?.store_address) && (
+              <div className="space-y-3 relative z-10">
+                {publicCatalogInfo.store_phone && (
+                  <a href={`https://wa.me/55${publicCatalogInfo.store_phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-600 flex items-center justify-center gap-2 hover:text-primary transition-colors">
+                    <div className="size-8 rounded-full bg-slate-50 flex items-center justify-center text-primary border border-slate-100">
+                      <Phone size={14} />
+                    </div>
+                    {publicCatalogInfo.store_phone}
+                  </a>
+                )}
+                {publicCatalogInfo.store_address && (
+                  <div className="text-sm font-bold text-slate-600 flex items-center justify-center gap-2 max-w-[280px] md:max-w-sm mx-auto leading-relaxed">
+                    <div className="size-8 rounded-full bg-slate-50 flex items-center justify-center text-primary shrink-0 border border-slate-100">
+                      <MapPin size={14} />
+                    </div>
+                    {publicCatalogInfo.store_address}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Redes Sociais */}
+            {(publicCatalogInfo?.instagram || publicCatalogInfo?.facebook || publicCatalogInfo?.tiktok) && (
+              <div className="flex items-center justify-center gap-3 relative z-10">
+                {publicCatalogInfo.instagram && (
+                  <a href={publicCatalogInfo.instagram.startsWith('http') ? publicCatalogInfo.instagram : `https://instagram.com/${publicCatalogInfo.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-gradient-to-tr hover:from-amber-500 hover:via-pink-500 hover:to-purple-500 hover:text-white transition-all duration-300 shadow-sm hover:shadow-pink-500/30">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>
+                  </a>
+                )}
+                {publicCatalogInfo.facebook && (
+                  <a href={publicCatalogInfo.facebook.startsWith('http') ? publicCatalogInfo.facebook : `https://facebook.com/${publicCatalogInfo.facebook}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-blue-600 hover:text-white transition-all duration-300 shadow-sm hover:shadow-blue-600/30">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"></path></svg>
+                  </a>
+                )}
+                {publicCatalogInfo.tiktok && (
+                  <a href={publicCatalogInfo.tiktok.startsWith('http') ? publicCatalogInfo.tiktok : `https://tiktok.com/@${publicCatalogInfo.tiktok.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-black hover:text-white transition-all duration-300 shadow-sm hover:shadow-black/30">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"></path></svg>
+                  </a>
+                )}
+              </div>
+            )}
+            
+            <div className="pt-2 opacity-40 relative z-10">
+               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Aplicativo B2B • Feito para você</p>
+            </div>
+          </footer>
+        </main>
         {/* MODAL DE DETALHES DO PRODUTO */}
         <AnimatePresence>
           {selectedProductForVar && (
-            <div className="fixed inset-0 z-[100] flex items-end justify-center">
+            <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center md:p-4">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedProductForVar(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-white/40 rounded-full z-10" />
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] md:rounded-[32px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-white/40 rounded-full z-10 md:hidden" />
                 
-                <div className="overflow-y-auto no-scrollbar pb-10">
+                <div className="overflow-y-auto no-scrollbar pb-10 md:pb-0">
                   {/* Imagem em Destaque */}
-                  <div className="relative aspect-square w-full">
+                  <div className="relative aspect-square w-full bg-slate-100">
                     <img 
-                      src={selectedProductForVar.image || 'https://picsum.photos/seed/public/400/400'} 
+                      src={selectedProductForVar.image || 'https://picsum.photos/seed/public/500/500'} 
                       alt={selectedProductForVar.name} 
                       className="w-full h-full object-cover" 
                     />
@@ -1038,22 +1360,16 @@ export default function App() {
 
                   <div className="p-6 space-y-6">
                     {/* Cabeçalho */}
-                    <div>
-                      <div className="flex justify-between items-start gap-4">
-                        <div>
-                          <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">{selectedProductForVar.category}</p>
-                          <h3 className="font-black text-2xl text-slate-900 leading-tight">{selectedProductForVar.name}</h3>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-2xl font-black text-primary">R$ {Number(selectedProductForVar.sale_price).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{selectedProductForVar.unidade_medida || 'Unidade'}</p>
-                        </div>
-                      </div>
+                    <div className="text-center">
+                      <p className="text-[10px] font-black text-primary uppercase tracking-widest mb-1">{selectedProductForVar.category}</p>
+                      <h3 className="font-black text-2xl text-slate-900 leading-tight mb-2">{selectedProductForVar.name}</h3>
+                      <p className="text-2xl font-black text-primary">R$ {Number(selectedProductForVar.sale_price).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{selectedProductForVar.unidade_medida || 'Unidade'}</p>
                     </div>
 
                     {/* Descrição */}
                     {selectedProductForVar.description && (
-                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 text-center">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Descrição</p>
                         <p className="text-sm font-medium text-slate-600 leading-relaxed">{selectedProductForVar.description}</p>
                       </div>
@@ -1062,7 +1378,7 @@ export default function App() {
                     {/* Variações (se existirem) */}
                     {selectedProductForVar.variations && selectedProductForVar.variations.length > 0 ? (
                       <div className="space-y-4">
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Opções Disponíveis</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Opções Disponíveis</p>
                         <div className="space-y-3">
                           {selectedProductForVar.variations.map((v: any) => (
                             <button
@@ -1133,20 +1449,47 @@ export default function App() {
 
         <AnimatePresence>
           {checkoutOpen && (
-            <div className="fixed inset-0 z-[80] flex items-end justify-center">
+            <div className="fixed inset-0 z-[80] flex items-end md:items-center justify-center md:p-4">
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setCheckoutOpen(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0" />
+                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0 md:hidden" />
                 
                 <div className="overflow-y-auto no-scrollbar flex-1 space-y-6">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Resumo do Pedido</p>
-                      <p className="text-2xl font-black text-slate-900">R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                      <div className="flex items-baseline gap-2">
+                        <p className="text-2xl font-black text-slate-900">R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                        {promotionDiscount > 0 && <span className="text-xs font-bold text-green-600">(-R$ {promotionDiscount.toFixed(2)})</span>}
+                      </div>
                     </div>
                     <button onClick={() => setCheckoutOpen(false)} className="p-2 rounded-2xl bg-slate-100 text-slate-700">
                       <XCircle size={24} />
                     </button>
+                  </div>
+
+                  {/* Detalhes de Preço */}
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-2">
+                    <div className="flex justify-between text-xs font-bold text-slate-500">
+                      <span>Subtotal Itens</span>
+                      <span>R$ {cartSubtotal.toLocaleString('pt-BR')}</span>
+                    </div>
+                    {promotionDiscount > 0 && (
+                      <div className="flex justify-between text-xs font-bold text-green-600">
+                        <span>Desconto Promoção</span>
+                        <span>- R$ {promotionDiscount.toLocaleString('pt-BR')}</span>
+                      </div>
+                    )}
+                    {paymentAdjustment !== 0 && (
+                      <div className={`flex justify-between text-xs font-bold ${paymentAdjustment > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                        <span>{paymentAdjustment > 0 ? 'Taxa' : 'Desconto'} Pagamento ({paymentMethod})</span>
+                        <span>{paymentAdjustment > 0 ? '+' : '-'} R$ {Math.abs(paymentAdjustment).toLocaleString('pt-BR')}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-sm font-black text-slate-900 pt-2 border-t border-slate-200">
+                      <span>Total Final</span>
+                      <span>R$ {cartTotal.toLocaleString('pt-BR')}</span>
+                    </div>
                   </div>
 
                   {/* Itens do Carrinho */}
@@ -1228,7 +1571,9 @@ export default function App() {
                         >
                           <option value="Pix">Pix</option>
                           <option value="Dinheiro">Dinheiro</option>
-                          <option value="Cartão">Cartão (Maquininha)</option>
+                          <option value="Cartão Debito">Cartão de Débito</option>
+                          <option value="Cartão Credito">Cartão de Crédito</option>
+                          <option value="Boleto">Boleto</option>
                         </select>
                       </div>
 
@@ -1299,10 +1644,222 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
+
+        {/* COMPROVANTE (RECIBO) DO PEDIDO */}
+        <AnimatePresence>
+          {completedOrder && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+                animate={{ opacity: 1, scale: 1, y: 0 }} 
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="w-full max-w-sm bg-white rounded-3xl shadow-2xl flex flex-col max-h-full overflow-hidden"
+              >
+                <div className="p-6 overflow-y-auto no-scrollbar" id="receipt-content">
+                  <div className="text-center space-y-2 mb-6">
+                    <div className="mx-auto w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-2">
+                      <CheckCircle size={32} />
+                    </div>
+                    <h2 className="text-2xl font-black text-slate-900 tracking-tight">Pedido Enviado!</h2>
+                    <p className="text-sm font-medium text-slate-500">
+                      Loja será notificada em breve.
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-4">
+                    <div className="text-center pb-4 border-b border-slate-200 border-dashed">
+                      <p className="font-black text-lg text-slate-900 uppercase tracking-tight">{completedOrder.storeName}</p>
+                      <p className="text-xs font-bold text-slate-400 mt-1">{completedOrder.date}</p>
+                    </div>
+                    
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Cliente</p>
+                      <p className="font-bold text-sm text-slate-900">{completedOrder.customerName}</p>
+                      <p className="text-xs font-medium text-slate-600">{completedOrder.customerContact}</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Itens</p>
+                      {completedOrder.items.map((item: any, idx: number) => (
+                        <div key={idx} className="flex justify-between text-xs font-medium text-slate-700">
+                          <span className="truncate pr-2">{item.quantity}x {item.name} {item.variationName ? `(${item.variationName})` : ''}</span>
+                          <span className="shrink-0 font-bold">R$ {item.total.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-200 border-dashed space-y-1">
+                      <div className="flex justify-between text-xs font-bold text-slate-500">
+                        <span>Subtotal</span>
+                        <span>R$ {completedOrder.cartSubtotal.toLocaleString('pt-BR', {minimumFractionDigits:2})}</span>
+                      </div>
+                      {completedOrder.promotionDiscount > 0 && (
+                        <div className="flex justify-between text-xs font-bold text-green-600">
+                          <span>Desconto</span>
+                          <span>-R$ {completedOrder.promotionDiscount.toLocaleString('pt-BR', {minimumFractionDigits:2})}</span>
+                        </div>
+                      )}
+                      {completedOrder.paymentAdjustment !== 0 && (
+                        <div className={`flex justify-between text-xs font-bold ${completedOrder.paymentAdjustment > 0 ? 'text-slate-500' : 'text-green-600'}`}>
+                          <span>{completedOrder.paymentMethod}</span>
+                          <span>{completedOrder.paymentAdjustment > 0 ? '+' : ''}R$ {completedOrder.paymentAdjustment.toLocaleString('pt-BR', {minimumFractionDigits:2})}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-sm font-black text-slate-900 pt-2">
+                        <span>TOTAL</span>
+                        <span>R$ {completedOrder.cartTotal.toLocaleString('pt-BR', {minimumFractionDigits:2})}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {completedOrder.paymentMethod === 'Pix' && completedOrder.pixKey && (
+                    <div className="bg-green-50 p-4 rounded-2xl border border-green-100 mt-4 space-y-3 flex flex-col items-center">
+                      <p className="text-[10px] font-black text-green-700 uppercase tracking-widest text-center">Chave PIX da Loja</p>
+                      
+                      <div className="w-full space-y-2">
+                        <div className="flex items-center justify-center bg-white px-4 py-4 rounded-xl border border-green-200 shadow-sm text-center">
+                          <span className="font-black text-base text-slate-800 select-all break-all">
+                            {completedOrder.pixKey}
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(completedOrder.pixKey);
+                            alert('Chave PIX copiada!');
+                          }}
+                          className="w-full h-12 flex items-center justify-center gap-2 bg-green-600 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-green-700 transition-colors shadow-lg shadow-green-600/20 active:scale-95"
+                        >
+                          Copiar Chave PIX
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {completedOrder.paymentMethod === 'Boleto' && (
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 mt-4 space-y-3 flex flex-col items-center relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-slate-900"></div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Banknote size={20} className="text-slate-900" />
+                        <h4 className="font-black text-slate-900 uppercase tracking-widest text-xs">Boleto Bancário</h4>
+                      </div>
+                      
+                      <div className="w-full space-y-3">
+                        <div className="flex flex-col items-center justify-center bg-white px-4 py-4 rounded-xl border border-slate-200 shadow-sm text-center gap-3">
+                          <div className="flex flex-col gap-1 items-center opacity-80">
+                            <div className="flex h-12 items-end justify-center gap-[2px]">
+                              {[2, 1, 3, 1, 1, 2, 4, 1, 2, 1, 1, 3, 2, 2, 1, 4, 1, 2, 1, 3, 2, 1, 1, 2, 3, 1, 2, 1, 4, 2].map((w, i) => (
+                                <div key={i} className="bg-slate-900" style={{ width: w + 'px', height: (i % 3 === 0 ? 100 : 80) + '%' }}></div>
+                              ))}
+                            </div>
+                          </div>
+                          
+                          <span className="font-black text-xs md:text-sm text-slate-800 select-all break-all tracking-wider font-mono">
+                            {generateBoletoLine(completedOrder.cartTotal)}
+                          </span>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(generateBoletoLine(completedOrder.cartTotal));
+                            alert('Código do boleto copiado!');
+                          }}
+                          className="w-full h-12 flex items-center justify-center gap-2 bg-slate-900 text-white font-black text-xs uppercase tracking-widest rounded-xl hover:bg-slate-800 transition-colors shadow-lg shadow-slate-900/20 active:scale-95"
+                        >
+                          Copiar Código
+                        </button>
+                      </div>
+                      <p className="text-[9px] font-bold text-slate-400 text-center px-4 leading-tight mt-2">
+                        Este é um boleto de demonstração. Em breve via Mercado Pago.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-4 bg-slate-50 border-t border-slate-100 space-y-3 shrink-0">
+                  <button 
+                    onClick={() => {
+                      const printContent = document.getElementById('receipt-content')?.innerHTML;
+                      const originalContent = document.body.innerHTML;
+                      if (printContent) {
+                        document.body.innerHTML = `<div style="padding:20px;max-width:400px;margin:0 auto;font-family:sans-serif;">${printContent}</div>`;
+                        window.print();
+                        document.body.innerHTML = originalContent;
+                        window.location.reload();
+                      }
+                    }}
+                    className="w-full h-12 flex items-center justify-center gap-2 bg-slate-900 text-white rounded-xl font-bold uppercase tracking-widest text-xs transition-transform active:scale-95"
+                  >
+                    <Download size={16} />
+                    Salvar PDF / Imprimir
+                  </button>
+
+                  <button 
+                    onClick={() => {
+                      let msg = `=================================\n`;
+                      msg += `      COMPROVANTE DE PEDIDO      \n`;
+                      msg += `=================================\n\n`;
+                      msg += `*LOJA:* ${completedOrder.storeName}\n`;
+                      msg += `*DATA:* ${completedOrder.date}\n`;
+                      msg += `*PEDIDO:* #${completedOrder.orderId.split('-')[0].toUpperCase()}\n\n`;
+                      
+                      msg += `---------------------------------\n`;
+                      msg += `*DADOS DO CLIENTE*\n`;
+                      msg += `Nome: ${completedOrder.customerName}\n`;
+                      msg += `Contato: ${completedOrder.customerContact}\n`;
+                      if (completedOrder.address) {
+                        msg += `Endereço: ${completedOrder.address}\n`;
+                      }
+                      msg += `\n`;
+                      
+                      msg += `---------------------------------\n`;
+                      msg += `*ITENS DO PEDIDO*\n\n`;
+                      completedOrder.items.forEach((item: any) => {
+                        msg += `${item.quantity}x ${item.name} ${item.variationName ? `(${item.variationName})` : ''}\n`;
+                        msg += `   R$ ${item.total.toLocaleString('pt-BR', {minimumFractionDigits:2})}\n`;
+                      });
+                      msg += `\n`;
+                      
+                      msg += `---------------------------------\n`;
+                      msg += `*RESUMO*\n`;
+                      msg += `Subtotal: R$ ${completedOrder.cartSubtotal.toLocaleString('pt-BR', {minimumFractionDigits:2})}\n`;
+                      if (completedOrder.promotionDiscount > 0) {
+                        msg += `Desconto: -R$ ${completedOrder.promotionDiscount.toLocaleString('pt-BR', {minimumFractionDigits:2})}\n`;
+                      }
+                      if (completedOrder.paymentAdjustment !== 0) {
+                        msg += `Pgto (${completedOrder.paymentMethod}): ${completedOrder.paymentAdjustment > 0 ? '+' : ''}R$ ${completedOrder.paymentAdjustment.toLocaleString('pt-BR', {minimumFractionDigits:2})}\n`;
+                      }
+                      
+                      msg += `\n`;
+                      msg += `*TOTAL: R$ ${completedOrder.cartTotal.toLocaleString('pt-BR', {minimumFractionDigits:2})}*\n`;
+                      msg += `=================================`;
+
+                      if (completedOrder.notes) {
+                        msg += `\n\n*OBSERVAÇÕES:*\n${completedOrder.notes}`;
+                      }
+
+                      // Codifica e abre no WhatsApp
+                      window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+                    }}
+                    id="btn-wa-share"
+                    className="w-full h-12 flex items-center justify-center gap-2 bg-[#25D366] text-white rounded-xl font-bold uppercase tracking-widest text-xs shadow-lg shadow-[#25D366]/20 transition-transform active:scale-95"
+                  >
+                    <Share2 size={16} />
+                    Enviar para meu WhatsApp
+                  </button>
+
+                  <button 
+                    onClick={() => setCompletedOrder(null)}
+                    className="w-full h-12 flex items-center justify-center font-bold text-slate-500 uppercase tracking-widest text-xs"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </div>
     );
   };
-
   const LoginPage = () => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
@@ -1890,16 +2447,43 @@ export default function App() {
     const [filterCategory, setFilterCategory] = useState('Todas');
     const [historyData, setHistoryData] = useState<StockHistory[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+    const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
 
     const categoriesList = useMemo(() => ['Todas', ...Array.from(new Set(products.map(p => p.category)))].sort(), [products]);
 
     const filtered = useMemo(() => {
+      const q = search.toLowerCase();
       return products.filter(p => {
-        const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase());
+        const matchesSearch = (p.name?.toLowerCase() || '').includes(q);
         const matchesCategory = filterCategory === 'Todas' || p.category === filterCategory;
         return matchesSearch && matchesCategory;
       });
     }, [products, search, filterCategory]);
+
+    const toggleSelection = (id: string) => {
+      setSelectedProducts(prev => 
+        prev.includes(id) ? prev.filter(pid => pid !== id) : [...prev, id]
+      );
+    };
+
+    const toggleAll = () => {
+      if (selectedProducts.length === filtered.length && filtered.length > 0) {
+        setSelectedProducts([]);
+      } else {
+        setSelectedProducts(filtered.map(p => p.id));
+      }
+    };
+
+    const handleBulkAvailability = async (available: boolean) => {
+      if (selectedProducts.length === 0) return;
+      try {
+        await supabaseService.updateProductsAvailability(selectedProducts, available);
+        setProducts(prev => prev.map(p => selectedProducts.includes(p.id) ? { ...p, available } : p));
+        setSelectedProducts([]);
+      } catch (e) {
+        alert('Erro ao atualizar produtos.');
+      }
+    };
 
     const fetchHistory = async (product: Product) => {
       setIsHistoryLoading(true);
@@ -1946,30 +2530,51 @@ export default function App() {
             />
           </div>
 
-          <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4">
-            {categoriesList.map(cat => (
-              <button
-                key={cat}
-                onClick={() => setFilterCategory(cat)}
-                className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap border ${
-                  filterCategory === cat ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-white text-slate-500 border-slate-200'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 flex-1">
+              {categoriesList.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setFilterCategory(cat)}
+                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap border ${
+                    filterCategory === cat ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-white text-slate-500 border-slate-200'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+            {filtered.length > 0 && (
+              <label className="flex items-center gap-2 ml-4 shrink-0 cursor-pointer p-2 rounded-xl hover:bg-slate-100 text-sm font-bold text-slate-600 transition-colors">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                  checked={selectedProducts.length === filtered.length && filtered.length > 0}
+                  onChange={toggleAll}
+                />
+                <span className="hidden sm:inline">Selecionar Todos</span>
+              </label>
+            )}
           </div>
         </section>
 
-        <main className="px-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-24">
+        <main className="px-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-32">
           {filtered.map(product => (
-            <div key={product.id} className="bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4 hover:border-primary/20 transition-all">
-              <div className="w-20 h-20 bg-slate-100 rounded-xl overflow-hidden shrink-0">
+            <div key={product.id} className="relative bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4 hover:border-primary/20 transition-all">
+              <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-slate-100">
+                <input 
+                  type="checkbox" 
+                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary cursor-pointer"
+                  checked={selectedProducts.includes(product.id)}
+                  onChange={() => toggleSelection(product.id)}
+                />
+              </div>
+              <div className={`w-20 h-20 rounded-xl overflow-hidden shrink-0 transition-opacity ${!product.available ? 'opacity-40 grayscale' : 'bg-slate-100'}`}>
                 <img src={product.image || 'https://picsum.photos/seed/prod/200/200'} alt={product.name} className="w-full h-full object-cover" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-start">
-                  <h3 className="font-black text-sm text-slate-900 truncate">{product.name}</h3>
+                  <h3 className={`font-black text-sm truncate ${!product.available ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{product.name}</h3>
                   <div className="flex gap-2">
                     <button onClick={() => { setProductToEdit(product); navigate('product-form'); }} className="text-slate-300 hover:text-primary transition-colors">
                       <Edit2 size={16} />
@@ -1981,7 +2586,7 @@ export default function App() {
                 </div>
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{product.category}</p>
                 <div className="mt-2 flex justify-between items-end">
-                  <span className="text-primary font-black text-base">R$ {product.sale_price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                  <span className={`font-black text-base ${!product.available ? 'text-slate-400' : 'text-primary'}`}>R$ {product.sale_price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
                   <div className="flex gap-2">
                     <button 
                       onClick={() => fetchHistory(product)}
@@ -1998,15 +2603,51 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="mt-1 flex items-center gap-2">
+                <div className="mt-1 flex items-center flex-wrap gap-1">
                   <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${product.stock <= 5 ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-500'}`}>
                     Estoque: {product.stock} {product.unidade_medida}
                   </span>
+                  {!product.available && (
+                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">
+                      Oculto
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
           ))}
         </main>
+
+        {/* Bulk Action Bar */}
+        <AnimatePresence>
+          {selectedProducts.length > 0 && (
+            <motion.div 
+              initial={{ y: 100, opacity: 0 }} 
+              animate={{ y: 0, opacity: 1 }} 
+              exit={{ y: 100, opacity: 0 }}
+              className="fixed bottom-20 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-max z-[90] bg-slate-900 text-white rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 border border-slate-800"
+            >
+              <div className="flex items-center gap-3">
+                <span className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-sm font-bold shadow-lg shadow-primary/20">{selectedProducts.length}</span>
+                <span className="text-sm font-black uppercase tracking-widest text-slate-200">Selecionados</span>
+              </div>
+              <div className="flex gap-2 w-full sm:w-auto">
+                <button 
+                  onClick={() => handleBulkAvailability(true)}
+                  className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
+                >
+                  Exibir no Catálogo
+                </button>
+                <button 
+                  onClick={() => handleBulkAvailability(false)}
+                  className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-white/10 text-slate-300 hover:bg-white/20 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
+                >
+                  Ocultar
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* MODAL DE REPOSIÇÃO */}
         <AnimatePresence>
@@ -2612,10 +3253,11 @@ export default function App() {
 
   const ClientsPage = () => {
     const filteredClients = useMemo(() => {
+      const q = clientSearch.toLowerCase();
       return clients.filter(client => {
-        const matchesSearch = client.name.toLowerCase().includes(clientSearch.toLowerCase()) || 
-          client.establishment.toLowerCase().includes(clientSearch.toLowerCase()) ||
-          client.city.toLowerCase().includes(clientSearch.toLowerCase());
+        const matchesSearch = (client.name?.toLowerCase() || '').includes(q) || 
+          (client.establishment?.toLowerCase() || '').includes(q) ||
+          (client.city?.toLowerCase() || '').includes(q);
         
         const matchesStatus = clientFilter === 'all' || 
           (clientFilter === 'active' && client.active) || 
@@ -2690,8 +3332,8 @@ export default function App() {
                 <div className="flex justify-between items-start mb-4">
                   <div className="flex gap-4">
                     <div className="size-14 rounded-2xl bg-primary/5 flex items-center justify-center text-primary shrink-0 border border-primary/10">
-                      {client.establishment.toLowerCase().includes('restaurante') ? <Utensils size={28} /> : 
-                       client.establishment.toLowerCase().includes('café') ? <Coffee size={28} /> : 
+                      {(client.establishment?.toLowerCase() || '').includes('restaurante') ? <Utensils size={28} /> : 
+                       (client.establishment?.toLowerCase() || '').includes('café') ? <Coffee size={28} /> : 
                        <Store size={28} />}
                     </div>
                     <div className="min-w-0">
@@ -3126,11 +3768,10 @@ export default function App() {
     const handleUpdateStatus = async (id: string, status: OrderStatus, extra: any = {}) => {
       try {
         const updated = await supabaseService.updateOrderStatus(id, status, extra);
-        setOrders(prev => prev.map(o => o.id === id ? { ...o, ...updated } : o));
+        setOrders((prev: Order[]) => prev.map((o: Order) => o.id === id ? { ...o, ...updated } : o));
         if (selectedOrder?.id === id) {
           setSelectedOrder({ ...selectedOrder, ...updated });
         }
-        setConfirmingDelivery(null);
         alert(`Pedido ${status === 'confirmed' ? 'Confirmado' : status === 'delivered' ? 'Entregue' : status === 'cancelled' ? 'Cancelado' : 'Pendente'}`);
       } catch (error: any) {
         console.error('Error updating order status:', error);
@@ -3159,9 +3800,9 @@ export default function App() {
 
       try {
         const updated = await supabaseService.confirmPayment(confirmingPayment.id, amount, isTotalPayment);
-        setOrders(prev => prev.map(o => o.id === confirmingPayment.id ? { ...o, ...updated } : o));
+        setOrders((prev: Order[]) => prev.map((o: Order) => o.id === confirmingPayment.id ? { ...o, ...updated } : o));
         if (selectedOrder?.id === confirmingPayment.id) {
-          setSelectedOrder(prev => prev ? { ...prev, ...updated } : null);
+          setSelectedOrder((prev: Order | null) => prev ? { ...prev, ...updated } : null);
         }
         setConfirmingPayment(null);
         setPaymentAmount('');
@@ -3173,7 +3814,7 @@ export default function App() {
     };
 
     const shareToWhatsApp = (order: Order) => {
-      const itemsText = order.items.map(item => 
+      const itemsText = order.items.map((item: any) => 
         `• ${item.productName || 'Produto'} x${item.quantity} - R$ ${item.price.toLocaleString('pt-BR')}`
       ).join('\n');
       
@@ -3188,7 +3829,7 @@ export default function App() {
     };
 
     const generateDetailedReceipt = (order: Order) => {
-      const itemsHtml = order.items.map(item => `
+      const itemsHtml = order.items.map((item: any) => `
         <tr>
           <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
             <div style="font-weight: bold; font-size: 14px;">${item.productName}</div>
@@ -3452,6 +4093,15 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                    {selectedOrder.deliveryDate && (
+                      <div className="text-right">
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Entrega</p>
+                        <div className="flex items-center gap-1 justify-end text-primary font-black">
+                          <Clock size={14} />
+                          <span className="text-sm">{selectedOrder.deliveryDate}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Endereço de Entrega no Pedido */}
@@ -3565,20 +4215,13 @@ export default function App() {
                 <div className="space-y-4">
                   <p className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">Ações do Pedido</p>
                   
-                  <div className="grid grid-cols-2 gap-3">
-                    <button 
-                      onClick={() => setConfirmingDelivery(selectedOrder)}
-                      disabled={selectedOrder.status === 'confirmed'}
-                      className="h-14 rounded-2xl bg-blue-500 text-white font-black text-xs uppercase tracking-widest shadow-lg shadow-blue-500/20 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                    >
-                      <CheckCircle2 size={18} /> Aceitar
-                    </button>
+                  <div className="grid grid-cols-1 gap-3">
                     <button 
                       onClick={() => handleUpdateStatus(selectedOrder.id, 'cancelled')}
                       disabled={selectedOrder.status === 'cancelled'}
                       className="h-14 rounded-2xl bg-red-50 text-red-500 font-black text-xs uppercase tracking-widest border border-red-100 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
                     >
-                      <XCircle size={18} /> Cancelar
+                      <XCircle size={18} /> Cancelar Pedido
                     </button>
                   </div>
 
@@ -3608,85 +4251,6 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
-
-        {/* MODAL DE CONFIRMAÇÃO DE ENTREGA E PAGAMENTO INICIAL */}
-        <AnimatePresence>
-          {confirmingDelivery && (
-            <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setConfirmingDelivery(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
-              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
-                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
-                <h3 className="font-black text-lg mb-1 text-slate-900">Confirmar Pedido</h3>
-                <p className="text-xs font-bold text-slate-400 uppercase mb-6">Defina os detalhes para o cliente</p>
-                
-                <form className="space-y-6" onSubmit={(e) => {
-                  e.preventDefault();
-                  const form = e.currentTarget;
-                  const date = (form.elements.namedItem('delivery_date') as HTMLInputElement).value;
-                  const status = (form.elements.namedItem('payment_status') as HTMLSelectElement).value;
-                  const paidAmount = status === 'partial' ? Number((form.elements.namedItem('initial_paid') as HTMLInputElement).value) : (status === 'paid' ? confirmingDelivery.total : 0);
-                  
-                  handleUpdateStatus(confirmingDelivery.id, 'confirmed', { 
-                    deliveryDate: date, 
-                    paymentStatus: status,
-                    paid_amount: paidAmount
-                  });
-                }}>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Data de Entrega</label>
-                    <input 
-                      name="delivery_date" 
-                      type="date" 
-                      required 
-                      defaultValue={new Date().toISOString().split('T')[0]}
-                      className="w-full h-14 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black outline-none focus:ring-2 focus:ring-primary/20" 
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Status do Pagamento</label>
-                    <select 
-                      name="payment_status"
-                      className="w-full h-14 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black outline-none focus:ring-2 focus:ring-primary/20"
-                      onChange={(e) => {
-                        const paidInput = document.getElementById('initial_paid_container');
-                        if (paidInput) paidInput.style.display = e.target.value === 'partial' ? 'block' : 'none';
-                      }}
-                    >
-                      <option value="pending">Pendente (Pagar na entrega)</option>
-                      <option value="partial">Pagamento Parcial</option>
-                      <option value="paid">Confirmado (Já pago totalmente)</option>
-                    </select>
-                  </div>
-
-                  <div id="initial_paid_container" className="space-y-1" style={{ display: 'none' }}>
-                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Valor Já Pago (R$)</label>
-                    <input 
-                      name="initial_paid" 
-                      type="number" 
-                      step="0.01"
-                      placeholder="0,00"
-                      className="w-full h-14 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black outline-none focus:ring-2 focus:ring-primary/20" 
-                    />
-                  </div>
-
-                  <div className="pt-2">
-                    <button type="submit" className="w-full h-16 bg-primary text-white rounded-3xl font-black uppercase tracking-widest shadow-xl shadow-primary/30 active:scale-95 transition-all flex items-center justify-center gap-2">
-                      <CheckCircle2 size={20} /> Confirmar e Aceitar
-                    </button>
-                    <button 
-                      type="button"
-                      onClick={() => setConfirmingDelivery(null)}
-                      className="w-full h-12 text-slate-400 font-bold text-xs uppercase tracking-widest mt-2"
-                    >
-                      Voltar
-                    </button>
-                  </div>
-                </form>
               </motion.div>
             </div>
           )}
@@ -3780,30 +4344,36 @@ export default function App() {
   };
 
   const OrderFormPage = () => {
-    const [isSaving, setIsSaving] = useState(false);
-    const [paymentMethod, setPaymentMethod] = useState('Pix');
+      const [isSaving, setIsSaving] = useState(false);
+      const [paymentMethod, setPaymentMethod] = useState('Pix');
     const [clientSearchTerm, setClientSearchTerm] = useState('');
     const [showClientSuggestions, setShowClientSuggestions] = useState(false);
 
     const filteredClientsForOrder = useMemo(() => {
       if (!clientSearchTerm) return [];
+      const q = clientSearchTerm.toLowerCase();
       return clients.filter(c => 
-        c.name.toLowerCase().includes(clientSearchTerm.toLowerCase()) || 
-        c.establishment.toLowerCase().includes(clientSearchTerm.toLowerCase()) ||
-        c.phone.includes(clientSearchTerm)
+        (c.name?.toLowerCase() || '').includes(q) || 
+        (c.establishment?.toLowerCase() || '').includes(q) ||
+        (c.phone || '').includes(clientSearchTerm)
       ).slice(0, 5);
     }, [clients, clientSearchTerm]);
 
-    const handleSelectClient = (client: any) => {
+    const handleSelectClient = (client: Client) => {
       setSelectedClientId(client.id);
       setClientSearchTerm(client.establishment || client.name);
       setShowClientSuggestions(false);
+      
+      // Auto-fill payment method based on client preference if exists
+      // (Assuming we might have this in the future, for now just standard)
+      setPaymentMethod('Pix');
     };
 
     const filteredProducts = useMemo(() => {
+      const q = productSearchForOrder.toLowerCase();
       return products.filter(p => 
-        p.name.toLowerCase().includes(productSearchForOrder.toLowerCase()) ||
-        p.category.toLowerCase().includes(productSearchForOrder.toLowerCase())
+        (p.name?.toLowerCase() || '').includes(q) ||
+        (p.category?.toLowerCase() || '').includes(q)
       );
     }, [products, productSearchForOrder]);
 
@@ -3813,19 +4383,23 @@ export default function App() {
       setPendingQuantities(prev => ({ ...prev, [productId]: Math.max(1, qty) }));
     };
 
+    const paymentAdjustment = useMemo(() => getPaymentAdjustment(paymentMethod), [paymentMethod, totalAfterPromotion]);
+    const finalTotal = useMemo(() => Math.max(0, totalAfterPromotion + paymentAdjustment), [totalAfterPromotion, paymentAdjustment]);
+
     const handleSaveOrder = async () => {
       if (!selectedClientId) { alert('Selecione um cliente.'); return; }
       if (cart.length === 0) { alert('Adicione pelo menos um produto.'); return; }
       
       setIsSaving(true);
       try {
-        const orderData = {
+        const orderData: any = {
           clientId: selectedClientId,
           clientName: selectedClient?.establishment || selectedClient?.name || 'Cliente',
-          total: cartTotal,
+          total: finalTotal,
           status: 'pending' as OrderStatus,
           paymentMethod,
-          items: cartWithDetails.map(item => ({
+          notes: `Promoção: ${activePromotion?.name || 'Nenhuma'} | Ajuste: R$ ${paymentAdjustment.toFixed(2)}`,
+          items: cartWithDetails.map((item: any) => ({
             productId: item.id,
             variationId: item.variationId,
             variationName: item.variationName,
@@ -3834,17 +4408,22 @@ export default function App() {
           }))
         };
 
-        const newOrder = await supabaseService.createOrder(orderData, cartWithDetails.map(item => ({
+        const newOrder = await supabaseService.createOrder(orderData, cartWithDetails.map((item: any) => ({
           productId: item.id,
           quantity: item.quantity,
           price: item.price
         })));
 
-        setOrders(prev => [newOrder as Order, ...prev]);
+        setOrders((prev: Order[]) => [newOrder as Order, ...prev]);
         setCart([]);
         setSelectedClientId(null);
         setPendingQuantities({});
-        alert('Pedido salvo com sucesso!');
+        
+        // Perguntar se deseja enviar o comprovante
+        if (confirm('Pedido salvo com sucesso! Deseja enviar o comprovante pelo WhatsApp agora?')) {
+          sendWhatsApp();
+        }
+        
         navigate('orders');
       } catch (error) {
         console.error(error);
@@ -3858,16 +4437,27 @@ export default function App() {
       if (!selectedClient) { alert('Selecione um cliente.'); return; }
       if (cart.length === 0) { alert('Adicione produtos ao pedido.'); return; }
 
-      const itemsText = cartWithDetails.map(item => 
-        `• ${item.name}${item.variationName ? ` (${item.variationName})` : ''} x${item.quantity} - R$ ${item.total.toLocaleString('pt-BR')}`
-      ).join('\n');
+      const itemsText = cartWithDetails.map((item: any) => 
+        `• *${item.name}*${item.variationName ? ` (${item.variationName})` : ''}\n  Qtd: ${item.quantity} x R$ ${item.price.toLocaleString('pt-BR')} = *R$ ${item.total.toLocaleString('pt-BR')}*`
+      ).join('\n\n');
       
-      const text = `*NOVO PEDIDO*\n\n` +
-                   `*Cliente:* ${selectedClient.establishment}\n` +
-                   `*Data:* ${new Date().toLocaleDateString('pt-BR')}\n` +
-                   `*Total:* R$ ${cartTotal.toLocaleString('pt-BR')}\n\n` +
-                   `*Itens:*\n${itemsText}\n\n` +
-                   `*Pagamento:* ${paymentMethod}`;
+      let text = `*📄 COMPROVANTE DE PEDIDO*\n\n` +
+                   `*🏠 Cliente:* ${selectedClient.establishment || selectedClient.name}\n` +
+                   `*👤 Responsável:* ${selectedClient.name}\n` +
+                   `*📅 Data:* ${new Date().toLocaleDateString('pt-BR')}\n` +
+                   `*💳 Pagamento:* ${paymentMethod}\n\n` +
+                   `*🛒 Itens:*\n${itemsText}\n\n`;
+
+      if (promotionDiscount > 0) {
+        text += `*🎁 Desconto (${activePromotion?.name}): - R$ ${promotionDiscount.toLocaleString('pt-BR')}*\n`;
+      }
+      
+      if (paymentAdjustment !== 0) {
+        text += `*${paymentAdjustment > 0 ? '⚠️ Taxa' : '✅ Desconto'} Pagamento: ${paymentAdjustment > 0 ? '+' : '-'} R$ ${Math.abs(paymentAdjustment).toLocaleString('pt-BR')}*\n`;
+      }
+
+      text += `\n*💰 TOTAL FINAL: R$ ${finalTotal.toLocaleString('pt-BR')}*\n\n` +
+                   `*Obrigado pela preferência!*`;
       
       const phone = selectedClient.whatsapp || selectedClient.phone;
       const cleanPhone = phone.replace(/\D/g, '');
@@ -3889,71 +4479,105 @@ export default function App() {
           <section className="p-4 space-y-3">
             <h2 className="text-xs font-black uppercase tracking-widest text-slate-400">Selecionar Cliente</h2>
             <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
-              <div className="relative">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Cliente</span>
+              {!selectedClient ? (
                 <div className="relative">
-                  <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <input 
-                    className="w-full h-14 pl-12 pr-4 rounded-xl border-slate-200 bg-slate-50 text-slate-900 focus:ring-primary focus:border-primary font-bold"
-                    placeholder="Buscar por nome, loja ou telefone..."
-                    value={clientSearchTerm}
-                    onFocus={() => setShowClientSuggestions(true)}
-                    onChange={(e) => {
-                      setClientSearchTerm(e.target.value);
-                      if (!e.target.value) setSelectedClientId(null);
-                    }}
-                  />
-                  
-                  <AnimatePresence>
-                    {showClientSuggestions && filteredClientsForOrder.length > 0 && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: -10 }} 
-                        animate={{ opacity: 1, y: 0 }} 
-                        exit={{ opacity: 0, y: -10 }}
-                        className="absolute top-full left-0 right-0 z-[60] bg-white border border-slate-200 rounded-xl mt-2 shadow-2xl overflow-hidden"
-                      >
-                        {filteredClientsForOrder.map(client => (
-                          <button
-                            key={client.id}
-                            onClick={() => handleSelectClient(client)}
-                            className="w-full p-4 text-left hover:bg-slate-50 flex items-center justify-between group transition-all"
-                          >
-                            <div>
-                              <p className="font-black text-sm text-slate-900">{client.establishment || client.name}</p>
-                              <p className="text-[10px] font-bold text-slate-400">{client.name} • {client.phone}</p>
-                            </div>
-                            <ArrowRight size={16} className="text-primary opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
-                          </button>
-                        ))}
-                        {clientSearchTerm.length >= 3 && !filteredClientsForOrder.find(c => (c.establishment || c.name).toLowerCase() === clientSearchTerm.toLowerCase()) && (
-                          <button
-                            onClick={() => {
-                              setClientToEdit(null);
-                              setNewClientPlaceholder(clientSearchTerm);
-                              navigate('client-form');
-                            }}
-                            className="w-full p-4 text-left bg-primary/5 hover:bg-primary/10 flex items-center gap-3 transition-all"
-                          >
-                            <div className="size-8 rounded-full bg-primary text-white flex items-center justify-center">
-                              <Plus size={16} />
-                            </div>
-                            <div>
-                              <p className="font-black text-sm text-primary">Criar novo cliente "{clientSearchTerm}"</p>
-                              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Clique para cadastrar este nome</p>
-                            </div>
-                          </button>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Cliente</span>
+                  <div className="relative">
+                    <Search size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input 
+                      className="w-full h-14 pl-12 pr-4 rounded-xl border-slate-200 bg-slate-50 text-slate-900 focus:ring-primary focus:border-primary font-bold"
+                      placeholder="Buscar por nome, loja ou telefone..."
+                      value={clientSearchTerm}
+                      onFocus={() => setShowClientSuggestions(true)}
+                      onChange={(e) => {
+                        setClientSearchTerm(e.target.value);
+                        if (!e.target.value) setSelectedClientId(null);
+                      }}
+                    />
+                    
+                    <AnimatePresence>
+                      {showClientSuggestions && filteredClientsForOrder.length > 0 && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -10 }} 
+                          animate={{ opacity: 1, y: 0 }} 
+                          exit={{ opacity: 0, y: -10 }}
+                          className="absolute top-full left-0 right-0 z-[60] bg-white border border-slate-200 rounded-xl mt-2 shadow-2xl overflow-hidden"
+                        >
+                          {filteredClientsForOrder.map(client => (
+                            <button
+                              key={client.id}
+                              onClick={() => handleSelectClient(client)}
+                              className="w-full p-4 text-left hover:bg-slate-50 flex items-center justify-between group transition-all"
+                            >
+                              <div>
+                                <p className="font-black text-sm text-slate-900">{client.establishment || client.name}</p>
+                                <p className="text-[10px] font-bold text-slate-400">{client.name} • {client.phone}</p>
+                              </div>
+                              <ArrowRight size={16} className="text-primary opacity-0 group-hover:opacity-100 -translate-x-2 group-hover:translate-x-0 transition-all" />
+                            </button>
+                          ))}
+                          {clientSearchTerm.length >= 3 && !filteredClientsForOrder.find(c => (c.establishment || c.name).toLowerCase() === clientSearchTerm.toLowerCase()) && (
+                            <button
+                              onClick={() => {
+                                setClientToEdit(null);
+                                setNewClientPlaceholder(clientSearchTerm);
+                                navigate('client-form');
+                              }}
+                              className="w-full p-4 text-left bg-primary/5 hover:bg-primary/10 flex items-center gap-3 transition-all"
+                            >
+                              <div className="size-8 rounded-full bg-primary text-white flex items-center justify-center">
+                                <Plus size={16} />
+                              </div>
+                              <div>
+                                <p className="font-black text-sm text-primary">Criar novo cliente "{clientSearchTerm}"</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Clique para cadastrar este nome</p>
+                              </div>
+                            </button>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
-              </div>
-              <button 
-                onClick={() => { setClientToEdit(null); navigate('client-form'); }}
-                className="mt-3 flex items-center gap-1 text-primary font-bold text-xs"
-              >
-                <PlusCircle size={16} /> Adicionar novo cliente
-              </button>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="size-14 rounded-2xl bg-primary/5 flex items-center justify-center text-primary border border-primary/10">
+                      {selectedClient.establishment?.toLowerCase().includes('restaurante') ? <Utensils size={28} /> : 
+                       selectedClient.establishment?.toLowerCase().includes('café') ? <Coffee size={28} /> : 
+                       <Store size={28} />}
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Cliente Selecionado</p>
+                      <h3 className="font-black text-lg text-slate-900">{selectedClient.establishment || selectedClient.name}</h3>
+                      <p className="text-xs font-bold text-slate-500">{selectedClient.name} • {selectedClient.phone}</p>
+                      {(selectedClient.rua || selectedClient.city) && (
+                        <p className="text-[10px] font-bold text-slate-400 mt-1 uppercase">
+                          {selectedClient.rua}, {selectedClient.numero} - {selectedClient.bairro}, {selectedClient.city}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setSelectedClientId(null);
+                      setClientSearchTerm('');
+                    }}
+                    className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                  >
+                    <Edit2 size={20} />
+                  </button>
+                </div>
+              )}
+              
+              {!selectedClient && (
+                <button 
+                  onClick={() => { setClientToEdit(null); navigate('client-form'); }}
+                  className="mt-3 flex items-center gap-1 text-primary font-bold text-xs"
+                >
+                  <PlusCircle size={16} /> Adicionar novo cliente
+                </button>
+              )}
             </div>
           </section>
 
@@ -4076,12 +4700,27 @@ export default function App() {
                 </select>
               </div>
               <div className="flex justify-between items-center opacity-60 text-xs font-bold mb-1">
-                <span>TOTAL DE ITENS</span>
-                <span>{cartItemsCount} unidades</span>
+                <span>SUBTOTAL DOS ITENS</span>
+                <span>R$ {cartSubtotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
               </div>
-              <div className="flex justify-between items-end">
+              
+              {promotionDiscount > 0 && (
+                <div className="flex justify-between items-center text-green-400 text-xs font-bold mb-1">
+                  <span>PROMOÇÃO: {activePromotion?.name}</span>
+                  <span>- R$ {promotionDiscount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                </div>
+              )}
+
+              {paymentAdjustment !== 0 && (
+                <div className={`flex justify-between items-center text-xs font-bold mb-1 ${paymentAdjustment > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                  <span>{paymentAdjustment > 0 ? 'TAXA' : 'DESCONTO'} PAGAMENTO</span>
+                  <span>{paymentAdjustment > 0 ? '+' : '-'} R$ {Math.abs(paymentAdjustment).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                </div>
+              )}
+
+              <div className="flex justify-between items-end border-t border-white/10 pt-4 mt-2">
                 <span className="text-sm font-bold">VALOR TOTAL</span>
-                <span className="text-3xl font-black text-primary">R$ {cartTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                <span className="text-3xl font-black text-primary">R$ {finalTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
               </div>
             </div>
           </section>
@@ -4165,14 +4804,14 @@ export default function App() {
     const [selectedCategory, setSelectedCategory] = useState<string>('Todas');
 
     const internalCategories = useMemo(() => {
-      const cats = new Set(products.map(p => p.category));
+      const cats = new Set(products.map((p: Product) => p.category));
       return ['Todas', ...Array.from(cats)].sort();
     }, [products]);
 
     const filteredProducts = useMemo(() => {
       const q = productSearchForOrder.toLowerCase();
-      return products.filter(p => {
-        const matchesSearch = p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q);
+      return products.filter((p: Product) => {
+        const matchesSearch = (p.name?.toLowerCase() || '').includes(q) || (p.category?.toLowerCase() || '').includes(q);
         const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
         return matchesSearch && matchesCategory;
       });
@@ -4309,7 +4948,10 @@ export default function App() {
             className="w-full bg-primary/95 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl shadow-primary/40 flex justify-between items-center border border-white/10 active:scale-95 transition-all"
           >
             <span className="font-bold">Ver Carrinho ({cartItemsCount})</span>
-            <span className="font-black">R$ {cartTotal.toLocaleString('pt-BR')}</span>
+            <div className="text-right">
+              {promotionDiscount > 0 && <p className="text-[10px] font-bold opacity-70 line-through">R$ {cartSubtotal.toLocaleString('pt-BR')}</p>}
+              <p className="font-black">R$ {totalAfterPromotion.toLocaleString('pt-BR')}</p>
+            </div>
           </button>
         </div>
       )}
@@ -4340,8 +4982,20 @@ export default function App() {
           </div>
         ))}
         {cart.length > 0 && (
-          <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t">
-            <button onClick={() => navigate('checkout')} className="w-full py-4 bg-primary text-white font-bold rounded-xl">Finalizar Pedido (R$ {cartTotal.toLocaleString('pt-BR')})</button>
+          <div className="fixed bottom-0 left-0 right-0 p-6 bg-white border-t space-y-3 shadow-2xl">
+            <div className="flex justify-between items-center px-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Subtotal</span>
+              <span className="font-bold text-slate-900">R$ {cartSubtotal.toLocaleString('pt-BR')}</span>
+            </div>
+            {promotionDiscount > 0 && (
+              <div className="flex justify-between items-center px-2 text-green-600">
+                <span className="text-xs font-bold uppercase tracking-widest">Promoção: {activePromotion?.name}</span>
+                <span className="font-bold">- R$ {promotionDiscount.toLocaleString('pt-BR')}</span>
+              </div>
+            )}
+            <button onClick={() => navigate('checkout')} className="w-full py-4 bg-primary text-white font-black rounded-2xl shadow-lg shadow-primary/20 uppercase tracking-widest">
+              Continuar (R$ {totalAfterPromotion.toLocaleString('pt-BR')})
+            </button>
           </div>
         )}
       </main>
@@ -4352,6 +5006,9 @@ export default function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [paymentMethod, setPaymentMethod] = useState('Pix');
 
+    const paymentAdjustment = useMemo(() => getPaymentAdjustment(paymentMethod), [paymentMethod, totalAfterPromotion]);
+    const finalTotal = useMemo(() => Math.max(0, totalAfterPromotion + paymentAdjustment), [totalAfterPromotion, paymentAdjustment]);
+
     const handleFinishOrder = async () => {
       if (!selectedClientId) { alert('Selecione um cliente.'); navigate('clients'); return; }
       setIsProcessing(true);
@@ -4359,13 +5016,14 @@ export default function App() {
         const newOrder = await supabaseService.createOrder({
           clientId: selectedClientId,
           clientName: selectedClient?.establishment || '',
-          total: cartTotal,
+          total: finalTotal,
           status: 'pending',
           paymentMethod,
-          items: cart.map(item => {
-            const product = products.find(p => p.id === item.productId);
-            const variation = product?.variations?.find(v => v.id === item.variationId);
-            const basePrice = product?.price || 0;
+          notes: `Promoção: ${activePromotion?.name || 'Nenhuma'} | Ajuste: R$ ${paymentAdjustment.toFixed(2)}`,
+          items: cart.map((item: any) => {
+            const product = products.find((p: Product) => p.id === item.productId);
+            const variation = product?.variations?.find((v: ProductVariation) => v.id === item.variationId);
+            const basePrice = product?.sale_price || 0;
             const finalPrice = basePrice + (variation?.additional_price || 0);
             
             return {
@@ -4376,10 +5034,10 @@ export default function App() {
               price: finalPrice
             };
           })
-        }, cart.map(item => {
-          const product = products.find(p => p.id === item.productId);
-          const variation = product?.variations?.find(v => v.id === item.variationId);
-          const basePrice = product?.price || 0;
+        }, cart.map((item: any) => {
+          const product = products.find((p: Product) => p.id === item.productId);
+          const variation = product?.variations?.find((v: ProductVariation) => v.id === item.variationId);
+          const basePrice = product?.sale_price || 0;
           const finalPrice = basePrice + (variation?.additional_price || 0);
 
           return {
@@ -4388,25 +5046,79 @@ export default function App() {
             price: finalPrice
           };
         }));
-        setOrders(prev => [newOrder as Order, ...prev]);
+        setOrders((prev: Order[]) => [newOrder as Order, ...prev]);
         setCart([]);
         setSelectedClientId(null);
         navigate('orders');
         alert('Pedido realizado!');
-      } catch (e) { alert('Erro ao processar.'); } finally { setIsProcessing(false); }
+      } catch (e: any) { alert('Erro ao processar.'); } finally { setIsProcessing(false); }
     };
 
     return (
       <div className="min-h-screen bg-background-light p-4">
         <Header title="Finalizar" showBack onBack={() => navigate('cart')} />
         <div className="space-y-6 mt-4">
-          <div className="p-4 bg-white rounded-xl border">
-            <h3 className="font-bold mb-2">Cliente Selecionado</h3>
-            {selectedClient ? <p className="text-primary font-bold">{selectedClient.establishment}</p> : <button onClick={() => navigate('clients')} className="text-blue-500 font-bold">Selecionar Cliente +</button>}
+          <div className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Cliente Selecionado</h3>
+            {selectedClient ? (
+              <div className="flex items-center gap-3">
+                <div className="size-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+                  <User size={20} />
+                </div>
+                <p className="font-black text-slate-900">{selectedClient.establishment || selectedClient.name}</p>
+              </div>
+            ) : (
+              <button onClick={() => navigate('clients')} className="w-full py-4 border-2 border-dashed border-primary/20 text-primary font-black rounded-xl hover:bg-primary/5 transition-all">
+                Selecionar Cliente +
+              </button>
+            )}
           </div>
-          <div className="p-4 bg-slate-900 text-white rounded-2xl">
-            <div className="flex justify-between mb-4"><span className="opacity-60">Total</span><span className="text-2xl font-black">R$ {cartTotal.toLocaleString('pt-BR')}</span></div>
-            <button onClick={handleFinishOrder} disabled={isProcessing || cart.length === 0} className="w-full py-4 bg-primary text-white font-bold rounded-xl">
+
+          <div className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm">
+            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Forma de Pagamento</h3>
+            <div className="grid grid-cols-2 gap-2">
+              {['Pix', 'Dinheiro', 'Cartão Credito', 'Cartão Debito', 'Boleto'].map(method => (
+                <button
+                  key={method}
+                  onClick={() => setPaymentMethod(method)}
+                  className={`py-3 px-2 rounded-xl text-[10px] font-black uppercase border transition-all ${paymentMethod === method ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-slate-50 text-slate-400 border-slate-100'}`}
+                >
+                  {method}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-6 bg-slate-900 text-white rounded-[32px] shadow-2xl space-y-4">
+            <div className="space-y-2 pb-4 border-b border-white/10">
+              <div className="flex justify-between text-xs font-bold opacity-60">
+                <span>Subtotal</span>
+                <span>R$ {cartSubtotal.toLocaleString('pt-BR')}</span>
+              </div>
+              {promotionDiscount > 0 && (
+                <div className="flex justify-between text-xs font-bold text-green-400">
+                  <span>Promoção: {activePromotion?.name}</span>
+                  <span>- R$ {promotionDiscount.toLocaleString('pt-BR')}</span>
+                </div>
+              )}
+              {paymentAdjustment !== 0 && (
+                <div className={`flex justify-between text-xs font-bold ${paymentAdjustment > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                  <span>{paymentAdjustment > 0 ? 'Taxa' : 'Desconto'} Pagamento</span>
+                  <span>{paymentAdjustment > 0 ? '+' : '-'} R$ {Math.abs(paymentAdjustment).toLocaleString('pt-BR')}</span>
+                </div>
+              )}
+            </div>
+            
+            <div className="flex justify-between items-end pt-2">
+              <span className="text-sm font-bold opacity-60 uppercase tracking-widest">Valor Final</span>
+              <span className="text-3xl font-black text-primary">R$ {finalTotal.toLocaleString('pt-BR')}</span>
+            </div>
+            
+            <button 
+              onClick={handleFinishOrder} 
+              disabled={isProcessing || cart.length === 0 || !selectedClient} 
+              className="w-full py-5 bg-primary text-white font-black rounded-2xl shadow-xl shadow-primary/40 uppercase tracking-widest active:scale-[0.98] transition-all disabled:opacity-50"
+            >
               {isProcessing ? 'Processando...' : 'Confirmar Pedido'}
             </button>
           </div>
@@ -4884,6 +5596,437 @@ export default function App() {
     );
   };
 
+  const PromotionsPage = () => {
+    const [activeTab, setActiveTab] = useState<'promotions' | 'payments'>('promotions');
+    const [isAddingPromotion, setIsAddingPromotion] = useState(false);
+    const [isAddingAdjustment, setIsAddingAdjustment] = useState(false);
+    const [editingPromotion, setEditingPromotion] = useState<Promotion | null>(null);
+    const [editingAdjustment, setEditingAdjustment] = useState<PaymentAdjustment | null>(null);
+
+    const [newPromotion, setNewPromotion] = useState<Omit<Promotion, 'id' | 'user_id' | 'created_at'>>({
+      name: '',
+      type: 'percentage',
+      value: 0,
+      active: true,
+      min_order_value: 0,
+      apply_to: 'all'
+    });
+
+    const [newAdjustment, setNewAdjustment] = useState<Omit<PaymentAdjustment, 'id' | 'user_id' | 'created_at'>>({
+      method: 'Pix',
+      type: 'discount',
+      adjustment_type: 'percentage',
+      value: 0,
+      active: true
+    });
+
+    const handleSavePromotion = async (e: React.FormEvent) => {
+      e.preventDefault();
+      try {
+        const payload: any = editingPromotion ? { ...editingPromotion, ...newPromotion } : newPromotion;
+        const saved = await supabaseService.upsertPromotion(payload);
+        if (editingPromotion) {
+          setPromotions((prev: Promotion[]) => prev.map((p: Promotion) => p.id === saved.id ? saved : p));
+        } else {
+          setPromotions((prev: Promotion[]) => [saved, ...prev]);
+        }
+        setIsAddingPromotion(false);
+        setEditingPromotion(null);
+        setNewPromotion({ name: '', type: 'percentage', value: 0, active: true, min_order_value: 0, apply_to: 'all' });
+      } catch (e: any) {
+        alert('Erro ao salvar promoção.');
+      }
+    };
+
+    const handleSaveAdjustment = async (e: React.FormEvent) => {
+      e.preventDefault();
+      try {
+        const payload: any = editingAdjustment ? { ...editingAdjustment, ...newAdjustment } : newAdjustment;
+        const saved = await supabaseService.upsertPaymentAdjustment(payload);
+        if (editingAdjustment) {
+          setPaymentAdjustments((prev: PaymentAdjustment[]) => prev.map((a: PaymentAdjustment) => a.id === saved.id ? saved : a));
+        } else {
+          setPaymentAdjustments((prev: PaymentAdjustment[]) => [...prev, saved]);
+        }
+        setIsAddingAdjustment(false);
+        setEditingAdjustment(null);
+        setNewAdjustment({ method: 'Pix', type: 'discount', adjustment_type: 'percentage', value: 0, active: true });
+      } catch (e: any) {
+        alert('Erro ao salvar ajuste de pagamento.');
+      }
+    };
+
+    const handleDeletePromotion = async (id: string) => {
+      if (!confirm('Deseja excluir esta promoção?')) return;
+      try {
+        await supabaseService.deletePromotion(id);
+        setPromotions(prev => prev.filter(p => p.id !== id));
+      } catch (e) { alert('Erro ao excluir.'); }
+    };
+
+    const handleDeleteAdjustment = async (id: string) => {
+      if (!confirm('Deseja excluir este ajuste?')) return;
+      try {
+        await supabaseService.deletePaymentAdjustment(id);
+        setPaymentAdjustments(prev => prev.filter(a => a.id !== id));
+      } catch (e) { alert('Erro ao excluir.'); }
+    };
+
+    return (
+      <div className="min-h-screen bg-background-light pb-32">
+        <Header title="Promoções e Taxas" />
+        
+        <main className="p-4 space-y-6 max-w-4xl mx-auto">
+          {/* Tabs */}
+          <div className="flex bg-white p-1 rounded-2xl shadow-sm border border-slate-100">
+            <button
+              onClick={() => setActiveTab('promotions')}
+              className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${activeTab === 'promotions' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-slate-400'}`}
+            >
+              Promoções Gerais
+            </button>
+            <button
+              onClick={() => setActiveTab('payments')}
+              className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${activeTab === 'payments' ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'text-slate-400'}`}
+            >
+              Taxas por Pagamento
+            </button>
+          </div>
+
+          {activeTab === 'promotions' ? (
+            <section className="space-y-4">
+              <div className="flex items-center justify-between px-2">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <Tag size={16} className="text-primary" /> Promoções Ativas
+                </h3>
+                <button 
+                  onClick={() => {
+                    setEditingPromotion(null);
+                    setNewPromotion({ name: '', type: 'percentage', value: 0, active: true, min_order_value: 0, apply_to: 'all' });
+                    setIsAddingPromotion(true);
+                  }}
+                  className="text-[10px] font-black text-primary uppercase bg-primary/10 px-3 py-1.5 rounded-lg active:scale-95 transition-all"
+                >
+                  + Nova Promoção
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {promotions.length === 0 ? (
+                  <div className="col-span-full bg-white p-10 rounded-[32px] text-center border border-dashed border-slate-200">
+                    <Tag size={40} className="mx-auto text-slate-200 mb-2" />
+                    <p className="text-xs font-bold text-slate-400 uppercase">Nenhuma promoção cadastrada</p>
+                  </div>
+                ) : (
+                  promotions.map(p => (
+                    <div key={p.id} className="bg-white p-5 rounded-[32px] shadow-sm border border-slate-100 flex flex-col justify-between hover:border-primary/20 transition-all group">
+                      <div className="flex justify-between items-start mb-4">
+                        <div className={`size-10 rounded-2xl flex items-center justify-center ${p.active ? 'bg-green-100 text-green-600' : 'bg-slate-100 text-slate-400'}`}>
+                          <Percent size={20} />
+                        </div>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => {
+                              setEditingPromotion(p);
+                              setNewPromotion({ ...p });
+                              setIsAddingPromotion(true);
+                            }}
+                            className="p-2 text-slate-400 hover:text-primary transition-colors"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                          <button 
+                            onClick={() => handleDeletePromotion(p.id)}
+                            className="p-2 text-slate-400 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-sm font-black text-slate-900 mb-1">{p.name}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase">
+                          {p.type === 'percentage' ? `${p.value}% de desconto` : `R$ ${p.value} de desconto`}
+                        </p>
+                        {p.min_order_value > 0 && (
+                          <p className="text-[9px] font-bold text-primary uppercase mt-1">
+                            Min: R$ {p.min_order_value.toLocaleString('pt-BR')}
+                          </p>
+                        )}
+                        {p.apply_to === 'category' && (
+                          <p className="text-[9px] font-bold text-indigo-500 uppercase mt-1">
+                            Aplica à Categoria: {p.target_id}
+                          </p>
+                        )}
+                        {p.apply_to === 'product' && (
+                          <p className="text-[9px] font-bold text-indigo-500 uppercase mt-1">
+                            Aplica ao Produto: {products.find(prod => prod.id === p.target_id)?.name || 'Específico'}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          ) : (
+            <section className="space-y-4">
+              <div className="flex items-center justify-between px-2">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <CreditCard size={16} className="text-primary" /> Taxas e Descontos
+                </h3>
+                <button 
+                  onClick={() => {
+                    setEditingAdjustment(null);
+                    setNewAdjustment({ method: 'Pix', type: 'discount', adjustment_type: 'percentage', value: 0, active: true });
+                    setIsAddingAdjustment(true);
+                  }}
+                  className="text-[10px] font-black text-primary uppercase bg-primary/10 px-3 py-1.5 rounded-lg active:scale-95 transition-all"
+                >
+                  + Novo Ajuste
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {paymentAdjustments.length === 0 ? (
+                  <div className="col-span-full bg-white p-10 rounded-[32px] text-center border border-dashed border-slate-200">
+                    <CreditCard size={40} className="mx-auto text-slate-200 mb-2" />
+                    <p className="text-xs font-bold text-slate-400 uppercase">Nenhum ajuste cadastrado</p>
+                  </div>
+                ) : (
+                  paymentAdjustments.map(a => (
+                    <div key={a.id} className="bg-white p-5 rounded-[32px] shadow-sm border border-slate-100 flex items-center justify-between group hover:border-primary/20 transition-all">
+                      <div className="flex items-center gap-4">
+                        <div className={`size-12 rounded-2xl flex items-center justify-center ${a.type === 'discount' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                          {a.method === 'Pix' ? <QrCode size={24} /> : a.method.includes('Cartão') ? <CreditCard size={24} /> : <Banknote size={24} />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-black text-slate-900">{a.method}</p>
+                          <p className={`text-[10px] font-bold uppercase ${a.type === 'discount' ? 'text-green-600' : 'text-red-600'}`}>
+                            {a.type === 'discount' ? 'Desconto' : 'Taxa'} de {a.adjustment_type === 'percentage' ? `${a.value}%` : `R$ ${a.value}`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <button 
+                          onClick={() => {
+                            setEditingAdjustment(a);
+                            setNewAdjustment({ ...a });
+                            setIsAddingAdjustment(true);
+                          }}
+                          className="p-2 text-slate-300 hover:text-primary transition-colors"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteAdjustment(a.id)}
+                          className="p-2 text-slate-300 hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          )}
+        </main>
+
+        {/* Modal Nova Promoção */}
+        <AnimatePresence>
+          {isAddingPromotion && (
+            <div className="fixed inset-0 z-[100] flex items-end justify-center">
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingPromotion(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
+                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
+                <h3 className="font-black text-lg mb-1 text-slate-900">{editingPromotion ? 'Editar Promoção' : 'Nova Promoção'}</h3>
+                <p className="text-xs font-bold text-slate-400 uppercase mb-6">Configure o desconto para seus pedidos</p>
+                
+                <form className="space-y-4" onSubmit={handleSavePromotion}>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Nome da Promoção</label>
+                    <input 
+                      type="text" required
+                      className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                      value={newPromotion.name}
+                      onChange={e => setNewPromotion({ ...newPromotion, name: e.target.value })}
+                      placeholder="Ex: Desconto de Inauguração"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Tipo</label>
+                      <select 
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newPromotion.type}
+                        onChange={e => setNewPromotion({ ...newPromotion, type: e.target.value as any })}
+                      >
+                        <option value="percentage">Porcentagem (%)</option>
+                        <option value="fixed">Valor Fixo (R$)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Valor</label>
+                      <input 
+                        type="number" step="0.01" required
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newPromotion.value}
+                        onChange={e => setNewPromotion({ ...newPromotion, value: Number(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Valor Mínimo do Pedido (R$)</label>
+                    <input 
+                      type="number" step="0.01"
+                      className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                      value={newPromotion.min_order_value}
+                      onChange={e => setNewPromotion({ ...newPromotion, min_order_value: Number(e.target.value) })}
+                      placeholder="0,00 (Opcional)"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Aplicar a</label>
+                    <select 
+                      className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                      value={newPromotion.apply_to || 'all'}
+                      onChange={e => setNewPromotion({ ...newPromotion, apply_to: e.target.value as any, target_id: '' })}
+                    >
+                      <option value="all">Todos os Produtos</option>
+                      <option value="category">Uma Categoria Específica</option>
+                      <option value="product">Um Produto Específico</option>
+                    </select>
+                  </div>
+
+                  {newPromotion.apply_to === 'category' && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Selecione a Categoria</label>
+                      <select 
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newPromotion.target_id || ''}
+                        onChange={e => setNewPromotion({ ...newPromotion, target_id: e.target.value })}
+                        required
+                      >
+                        <option value="">Selecione...</option>
+                        {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {newPromotion.apply_to === 'product' && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Selecione o Produto</label>
+                      <select 
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newPromotion.target_id || ''}
+                        onChange={e => setNewPromotion({ ...newPromotion, target_id: e.target.value })}
+                        required
+                      >
+                        <option value="">Selecione...</option>
+                        {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="pt-2">
+                    <button type="submit" className="w-full h-16 bg-primary text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-primary/30 active:scale-95 transition-all">
+                      Salvar Promoção
+                    </button>
+                    <button type="button" onClick={() => setIsAddingPromotion(false)} className="w-full h-12 text-slate-400 font-bold text-xs uppercase tracking-widest mt-2">Cancelar</button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Modal Novo Ajuste de Pagamento */}
+        <AnimatePresence>
+          {isAddingAdjustment && (
+            <div className="fixed inset-0 z-[100] flex items-end justify-center">
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingAdjustment(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
+                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
+                <h3 className="font-black text-lg mb-1 text-slate-900">{editingAdjustment ? 'Editar Ajuste' : 'Novo Ajuste de Pagamento'}</h3>
+                <p className="text-xs font-bold text-slate-400 uppercase mb-6">Adicione taxas ou descontos por forma de pagamento</p>
+                
+                <form className="space-y-4" onSubmit={handleSaveAdjustment}>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Forma de Pagamento</label>
+                    <select 
+                      className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                      value={newAdjustment.method}
+                      onChange={e => setNewAdjustment({ ...newAdjustment, method: e.target.value })}
+                    >
+                      <option value="Pix">Pix</option>
+                      <option value="Dinheiro">Dinheiro</option>
+                      <option value="Cartão Credito">Cartão Credito</option>
+                      <option value="Cartão Debito">Cartão Debito</option>
+                      <option value="Boleto">Boleto</option>
+                    </select>
+                  </div>
+
+                  <div className="flex bg-slate-100 p-1 rounded-2xl">
+                    <button 
+                      type="button"
+                      onClick={() => setNewAdjustment({ ...newAdjustment, type: 'discount' })}
+                      className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${newAdjustment.type === 'discount' ? 'bg-green-500 text-white shadow-lg shadow-green-500/20' : 'text-slate-400'}`}
+                    >
+                      Desconto
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => setNewAdjustment({ ...newAdjustment, type: 'fee' })}
+                      className={`flex-1 py-3 rounded-xl text-[10px] font-black uppercase transition-all ${newAdjustment.type === 'fee' ? 'bg-red-500 text-white shadow-lg shadow-red-500/20' : 'text-slate-400'}`}
+                    >
+                      Taxa (Acréscimo)
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Tipo de Ajuste</label>
+                      <select 
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newAdjustment.adjustment_type}
+                        onChange={e => setNewAdjustment({ ...newAdjustment, adjustment_type: e.target.value as any })}
+                      >
+                        <option value="percentage">Porcentagem (%)</option>
+                        <option value="fixed">Valor Fixo (R$)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Valor</label>
+                      <input 
+                        type="number" step="0.01" required
+                        className="w-full h-14 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                        value={newAdjustment.value}
+                        onChange={e => setNewAdjustment({ ...newAdjustment, value: Number(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button type="submit" className="w-full h-16 bg-primary text-white rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-primary/30 active:scale-95 transition-all">
+                      Salvar Ajuste
+                    </button>
+                    <button type="button" onClick={() => setIsAddingAdjustment(false)} className="w-full h-12 text-slate-400 font-bold text-xs uppercase tracking-widest mt-2">Cancelar</button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        <BottomNav />
+      </div>
+    );
+  };
+
   const SettingsPage = () => {
     const [testResult, setTestTestResult] = useState<string | null>(null);
     const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -5246,12 +6389,13 @@ export default function App() {
                     <button 
                       key={day}
                       onClick={() => {
-                        const days = localProfile.work_days.includes(day)
-                          ? localProfile.work_days.filter(d => d !== day)
-                          : [...localProfile.work_days, day];
+                        const currentDays = localProfile.work_days || [];
+                        const days = currentDays.includes(day)
+                          ? currentDays.filter(d => d !== day)
+                          : [...currentDays, day];
                         setLocalProfile({ ...localProfile, work_days: days });
                       }}
-                      className={`px-3 py-2 rounded-xl text-[10px] font-black transition-all ${localProfile.work_days.includes(day) ? 'bg-primary text-white' : 'bg-slate-100 text-slate-400'}`}
+                      className={`px-3 py-2 rounded-xl text-[10px] font-black transition-all ${(localProfile.work_days || []).includes(day) ? 'bg-primary text-white' : 'bg-slate-100 text-slate-400'}`}
                     >
                       {day}
                     </button>
@@ -5344,6 +6488,15 @@ export default function App() {
                   onChange={e => setLocalSettings({...localSettings, tax_id: e.target.value})}
                 />
               </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Chave PIX (Para Recebimentos)</label>
+                <input 
+                  className="w-full h-12 px-4 rounded-xl border border-slate-100 bg-slate-50 focus:ring-2 focus:ring-primary outline-none transition-all font-bold text-sm" 
+                  placeholder="E-mail, CPF, Celular ou Aleatória"
+                  value={localSettings.pix_key || ''}
+                  onChange={e => setLocalSettings({...localSettings, pix_key: e.target.value})}
+                />
+              </div>
             </div>
           </section>
 
@@ -5368,6 +6521,42 @@ export default function App() {
                   className="w-full h-12 px-4 rounded-xl border border-slate-100 bg-slate-50 focus:ring-2 focus:ring-primary outline-none transition-all font-bold text-sm" 
                   value={localSettings.store_email}
                   onChange={e => setLocalSettings({...localSettings, store_email: e.target.value})}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* Redes Sociais */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+              <Globe size={16} className="text-primary" /> Redes Sociais
+            </h4>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Instagram</label>
+                <input 
+                  className="w-full h-12 px-4 rounded-xl border border-slate-100 bg-slate-50 focus:ring-2 focus:ring-primary outline-none transition-all font-bold text-sm" 
+                  placeholder="@seuperfil ou Link"
+                  value={localSettings.instagram || ''}
+                  onChange={e => setLocalSettings({...localSettings, instagram: e.target.value})}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Facebook</label>
+                <input 
+                  className="w-full h-12 px-4 rounded-xl border border-slate-100 bg-slate-50 focus:ring-2 focus:ring-primary outline-none transition-all font-bold text-sm" 
+                  placeholder="Nome da página ou Link"
+                  value={localSettings.facebook || ''}
+                  onChange={e => setLocalSettings({...localSettings, facebook: e.target.value})}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">TikTok</label>
+                <input 
+                  className="w-full h-12 px-4 rounded-xl border border-slate-100 bg-slate-50 focus:ring-2 focus:ring-primary outline-none transition-all font-bold text-sm" 
+                  placeholder="@seuperfil ou Link"
+                  value={localSettings.tiktok || ''}
+                  onChange={e => setLocalSettings({...localSettings, tiktok: e.target.value})}
                 />
               </div>
             </div>
@@ -5718,6 +6907,7 @@ export default function App() {
       case 'order-form': return <OrderFormPage />;
       case 'finance': return <FinancePage />;
       case 'catalog': return <CatalogPage />;
+      case 'promotions': return <PromotionsPage />;
       case 'cart': return <CartPage />;
       case 'checkout': return <CheckoutPage />;
       case 'settings': return <SettingsPage />;

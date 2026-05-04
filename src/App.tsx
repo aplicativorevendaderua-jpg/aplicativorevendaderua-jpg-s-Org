@@ -151,6 +151,13 @@ export default function App() {
   useEffect(() => {
     console.log('App initialization - Configured:', isConfigured);
   }, [isConfigured]);
+  const [reduceMotion] = useState(() => {
+    try {
+      return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+    } catch {
+      return false;
+    }
+  });
   const [currentPage, setCurrentPage] = useState<Page>('login');
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -477,7 +484,7 @@ export default function App() {
             
             sendLocalNotification(notification.title, notification.message, { orderId: newOrder.id });
             setNotifications((prev: any[]) => [notification, ...prev]);
-            fetchData();
+            fetchOrdersOnly();
           }
         }
       )
@@ -493,10 +500,10 @@ export default function App() {
   , [clients, selectedClientId]);
 
   const fetchDataInFlightRef = useRef(false);
-  const fetchData = async () => {
+  const fetchData = async (opts?: { silent?: boolean }) => {
     if (fetchDataInFlightRef.current) return;
     fetchDataInFlightRef.current = true;
-    setIsLoading(true);
+    if (!opts?.silent) setIsLoading(true);
     try {
       // Usar catch individual para cada promise para evitar que uma falha trave todo o app
       const [
@@ -506,38 +513,23 @@ export default function App() {
         categoriesData, 
         settingsData, 
         appConfigData, 
-        backupsData, 
         profileData, 
-        publicCatalogData, 
-        promotionsData, 
-        adjustmentsData
+        publicCatalogData
       ] = await Promise.all([
-        supabaseService.getProducts().catch(() => [] as Product[]),
-        supabaseService.getClients().catch(() => [] as Client[]),
-        supabaseService.getOrders().catch(() => [] as Order[]),
+        supabaseService.getProductsLite().catch(() => [] as Product[]),
+        supabaseService.getClientsLite().catch(() => [] as Client[]),
+        supabaseService.getOrdersLite().catch(() => [] as Order[]),
         supabaseService.getCategories().catch(() => [] as Category[]),
         supabaseService.getSettings().catch(() => null),
         supabaseService.getAppConfig().catch(() => null),
-        supabaseService.getBackups().catch(() => [] as BackupEntry[]),
         supabaseService.getProfile().catch(() => null),
-        supabaseService.getPublicCatalog().catch(() => null),
-        supabaseService.getPromotions().catch((err: any) => {
-          console.warn('Tabela promotions não encontrada ou erro ao carregar:', err.message || err);
-          return [] as Promotion[];
-        }),
-        supabaseService.getPaymentAdjustments().catch((err: any) => {
-          console.warn('Tabela payment_adjustments não encontrada ou erro ao carregar:', err.message || err);
-          return [] as PaymentAdjustment[];
-        })
+        supabaseService.getPublicCatalog().catch(() => null)
       ]);
 
       setProducts(productsData);
       setClients(clientsData);
       setOrders(ordersData);
       setCategories(categoriesData);
-      setBackups(backupsData);
-      setPromotions(promotionsData);
-      setPaymentAdjustments(adjustmentsData);
       if (settingsData) setAppSettings(settingsData);
       if (appConfigData) setUserAppConfig(appConfigData);
       if (profileData) setUserProfile(profileData);
@@ -556,10 +548,49 @@ export default function App() {
       }
       alert(`Aviso: Não foi possível carregar dados do Supabase. ${message}`);
     } finally {
-      setIsLoading(false);
+      if (!opts?.silent) setIsLoading(false);
       fetchDataInFlightRef.current = false;
     }
   };
+
+  const fetchOrdersOnly = async () => {
+    const data = await supabaseService.getOrdersLite().catch(() => [] as Order[]);
+    setOrders(data);
+  };
+
+  const backupsLoadedRef = useRef(false);
+  const loadBackups = async () => {
+    if (backupsLoadedRef.current) return;
+    backupsLoadedRef.current = true;
+    const data = await supabaseService.getBackups().catch(() => [] as BackupEntry[]);
+    setBackups(data);
+  };
+
+  const promotionsLoadedRef = useRef(false);
+  const loadPromotions = async () => {
+    if (promotionsLoadedRef.current) return;
+    promotionsLoadedRef.current = true;
+    const data = await supabaseService.getPromotions().catch(() => [] as Promotion[]);
+    setPromotions(data);
+  };
+
+  const adjustmentsLoadedRef = useRef(false);
+  const loadPaymentAdjustments = async () => {
+    if (adjustmentsLoadedRef.current) return;
+    adjustmentsLoadedRef.current = true;
+    const data = await supabaseService.getPaymentAdjustments().catch(() => [] as PaymentAdjustment[]);
+    setPaymentAdjustments(data);
+  };
+
+  useEffect(() => {
+    if (currentPage === 'settings') {
+      loadBackups();
+    }
+    if (currentPage === 'promotions' || currentPage === 'catalog' || currentPage === 'order-form') {
+      loadPromotions();
+      loadPaymentAdjustments();
+    }
+  }, [currentPage]);
 
   const fetchPublicCatalog = async (slug: string) => {
     setPublicCatalogIsLoading(true);
@@ -656,6 +687,14 @@ export default function App() {
       return [...prev, { productId: product.id, variationId, quantity }];
     });
     setSelectedProductForVariation(null);
+  };
+
+  const ensureProductVariationsLoaded = async (product: Product) => {
+    if (Array.isArray(product.variations)) return product;
+    const variations = await supabaseService.getProductVariations(product.id).catch(() => [] as ProductVariation[]);
+    const updated: Product = { ...product, variations };
+    setProducts((prev: Product[]) => prev.map((p: Product) => p.id === product.id ? updated : p));
+    return updated;
   };
 
 
@@ -1481,7 +1520,7 @@ export default function App() {
         <AnimatePresence>
           {selectedProductForVar && (
             <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center md:p-4">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedProductForVar(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setSelectedProductForVar(null)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] md:rounded-[32px] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
                 <div className="absolute top-4 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-white/40 rounded-full z-10 md:hidden" />
                 
@@ -1588,7 +1627,7 @@ export default function App() {
         <AnimatePresence>
           {checkoutOpen && (
             <div className="fixed inset-0 z-[80] flex items-end md:items-center justify-center md:p-4">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setCheckoutOpen(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setCheckoutOpen(false)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0 md:hidden" />
                 
@@ -2802,7 +2841,7 @@ export default function App() {
         <AnimatePresence>
           {replenishingProduct && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setReplenishingProduct(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setReplenishingProduct(null)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl overflow-hidden">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1">Reposição de Estoque</h3>
@@ -2849,7 +2888,7 @@ export default function App() {
         <AnimatePresence>
           {viewingHistory && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setViewingHistory(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setViewingHistory(null)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md md:max-w-3xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6 shrink-0" />
                 <h3 className="font-black text-lg mb-1">Histórico do Produto</h3>
@@ -3548,7 +3587,7 @@ export default function App() {
                 animate={{ opacity: 1 }} 
                 exit={{ opacity: 0 }}
                 onClick={() => setSelectedClientForDetails(null)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/60"
               />
               <motion.div 
                 initial={{ y: "100%" }} 
@@ -3905,6 +3944,8 @@ export default function App() {
   };
 
   const OrdersPage = () => {
+    const [isLoadingOrderDetails, setIsLoadingOrderDetails] = useState(false);
+
     const filteredOrders = useMemo(() => {
       return orders.filter(order => {
         const matchesStatus = orderFilter === 'all' || order.status === orderFilter;
@@ -3913,6 +3954,31 @@ export default function App() {
         return matchesStatus && matchesSearch;
       });
     }, [orders, orderFilter, orderSearch]);
+
+    const fetchOrderItemsForDisplay = async (orderId: string) => {
+      const items = await supabaseService.getOrderItems(orderId);
+      return (items || []).map((item: any) => ({
+        productId: item.product_id,
+        productName: item.products?.name || 'Produto',
+        productImage: item.products?.image,
+        variationName: item.variation_name,
+        quantity: item.quantity,
+        price: item.price_at_time
+      })) as Array<{ productId: string; productName: string; productImage?: string; variationName?: string; quantity: number; price: number }>;
+    };
+
+    const ensureOrderItemsLoaded = async (order: Order) => {
+      if (Array.isArray(order.items) && order.items.length > 0) return order;
+      setIsLoadingOrderDetails(true);
+      try {
+        const items = await fetchOrderItemsForDisplay(order.id);
+        setOrders((prev: Order[]) => prev.map((o: Order) => o.id === order.id ? { ...o, items } : o));
+        setSelectedOrder((prev: Order | null) => prev && prev.id === order.id ? { ...prev, items } : prev);
+        return { ...order, items };
+      } finally {
+        setIsLoadingOrderDetails(false);
+      }
+    };
 
     const handleUpdateStatus = async (id: string, status: OrderStatus, extra: any = {}) => {
       try {
@@ -3962,23 +4028,25 @@ export default function App() {
       }
     };
 
-    const shareToWhatsApp = (order: Order) => {
-      const itemsText = order.items.map((item: any) => 
+    const shareToWhatsApp = async (order: Order) => {
+      const full = await ensureOrderItemsLoaded(order);
+      const itemsText = full.items.map((item: any) => 
         `• ${item.productName || 'Produto'} x${item.quantity} - R$ ${item.price.toLocaleString('pt-BR')}`
       ).join('\n');
       
-      const text = `*PEDIDO #${order.id.slice(0, 8)}*\n\n` +
-                   `*Cliente:* ${order.clientName}\n` +
-                   `*Data:* ${order.date}\n` +
-                   `*Total:* R$ ${order.total.toLocaleString('pt-BR')}\n\n` +
+      const text = `*PEDIDO #${full.id.slice(0, 8)}*\n\n` +
+                   `*Cliente:* ${full.clientName}\n` +
+                   `*Data:* ${full.date}\n` +
+                   `*Total:* R$ ${full.total.toLocaleString('pt-BR')}\n\n` +
                    `*Itens:*\n${itemsText}\n\n` +
-                   `*Status:* ${order.status.toUpperCase()}`;
+                   `*Status:* ${full.status.toUpperCase()}`;
       
       window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
     };
 
-    const generateDetailedReceipt = (order: Order) => {
-      const itemsHtml = order.items.map((item: any) => `
+    const generateDetailedReceipt = async (order: Order) => {
+      const full = await ensureOrderItemsLoaded(order);
+      const itemsHtml = full.items.map((item: any) => `
         <tr>
           <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
             <div style="font-weight: bold; font-size: 14px;">${item.productName}</div>
@@ -3996,7 +4064,7 @@ export default function App() {
       printWindow.document.write(`
         <html>
           <head>
-            <title>Comprovante de Pedido #${order.id.slice(0, 8)}</title>
+            <title>Comprovante de Pedido #${full.id.slice(0, 8)}</title>
             <style>
               body { font-family: 'Inter', sans-serif; padding: 40px; color: #1a1a1a; max-width: 800px; margin: 0 auto; background: #f8fafc; }
               .receipt-card { background: white; padding: 40px; border-radius: 24px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
@@ -4025,26 +4093,26 @@ export default function App() {
               </div>
 
               <div style="margin-bottom: 30px;">
-                <h2 style="margin: 0; font-size: 24px; font-weight: 900;">Pedido #${order.id.slice(0, 8)}</h2>
-                <div class="status-badge" style="background: #f1f5f9; color: #475569;">${order.status.toUpperCase()}</div>
+                <h2 style="margin: 0; font-size: 24px; font-weight: 900;">Pedido #${full.id.slice(0, 8)}</h2>
+                <div class="status-badge" style="background: #f1f5f9; color: #475569;">${full.status.toUpperCase()}</div>
               </div>
 
               <div class="client-card">
                 <div class="info-group">
                   <h4>Cliente</h4>
-                  <p>${order.clientName}</p>
+                  <p>${full.clientName}</p>
                 </div>
                 <div class="info-group">
                   <h4>Entrega Prevista</h4>
-                  <p>${order.deliveryDate ? new Date(order.deliveryDate).toLocaleDateString('pt-BR') : 'A definir'}</p>
+                  <p>${full.deliveryDate ? new Date(full.deliveryDate).toLocaleDateString('pt-BR') : 'A definir'}</p>
                 </div>
                 <div class="info-group">
                   <h4>Pagamento</h4>
-                  <p>${order.paymentMethod || 'Não informado'} (${order.paymentStatus === 'paid' ? 'PAGO' : 'PENDENTE'})</p>
+                  <p>${full.paymentMethod || 'Não informado'} (${full.paymentStatus === 'paid' ? 'PAGO' : 'PENDENTE'})</p>
                 </div>
                 <div class="info-group">
                   <h4>Total do Pedido</h4>
-                  <p>R$ ${order.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                  <p>R$ ${full.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                 </div>
               </div>
 
@@ -4064,16 +4132,16 @@ export default function App() {
 
               <div class="total-section">
                 <div>
-                  ${order.notes ? `
+                  ${full.notes ? `
                     <div style="margin-top: 20px;">
                       <h4 style="margin: 0; font-size: 10px; text-transform: uppercase; color: #64748b;">Observações</h4>
-                      <p style="margin: 4px 0 0 0; font-size: 13px; font-style: italic; color: #475569;">${order.notes}</p>
+                      <p style="margin: 4px 0 0 0; font-size: 13px; font-style: italic; color: #475569;">${full.notes}</p>
                     </div>
                   ` : ''}
                 </div>
                 <div style="text-align: right;">
                   <p style="margin: 0; font-size: 12px; color: #64748b; font-weight: 700;">VALOR TOTAL</p>
-                  <p style="margin: 4px 0 0 0; font-size: 32px; font-weight: 900; color: #3b82f6;">R$ ${order.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                  <p style="margin: 4px 0 0 0; font-size: 32px; font-weight: 900; color: #3b82f6;">R$ ${full.total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
                 </div>
               </div>
 
@@ -4141,7 +4209,10 @@ export default function App() {
             filteredOrders.map(order => (
               <div 
                 key={order.id} 
-                onClick={() => setSelectedOrder(order)}
+                onClick={() => {
+                  setSelectedOrder(order);
+                  ensureOrderItemsLoaded(order);
+                }}
                 className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.98] transition-all cursor-pointer hover:border-primary/20"
               >
                 <div className="flex justify-between items-start mb-3">
@@ -4207,13 +4278,15 @@ export default function App() {
                 initial={{ opacity: 0 }} 
                 animate={{ opacity: 1 }} 
                 exit={{ opacity: 0 }}
+                transition={{ duration: reduceMotion ? 0 : 0.12 }}
                 onClick={() => setSelectedOrder(null)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/60"
               />
               <motion.div 
                 initial={{ y: "100%" }} 
                 animate={{ y: 0 }} 
                 exit={{ y: "100%" }}
+                transition={{ duration: reduceMotion ? 0 : 0.18 }}
                 className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl overflow-y-auto no-scrollbar max-h-[90vh]"
               >
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
@@ -4294,6 +4367,14 @@ export default function App() {
 
                 <div className="space-y-4 mb-8">
                   <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Itens do Pedido</h3>
+                  {isLoadingOrderDetails && (!selectedOrder.items || selectedOrder.items.length === 0) && (
+                    <div className="flex items-center justify-center py-6">
+                      <div className="animate-spin size-6 border-2 border-primary border-t-transparent rounded-full" />
+                    </div>
+                  )}
+                  {!isLoadingOrderDetails && selectedOrder.items?.length === 0 && (
+                    <p className="text-center py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest italic">Itens não carregados</p>
+                  )}
                   {selectedOrder.items?.map((item, i) => (
                     <div key={i} className="flex gap-4 items-center bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
                       <div className="size-14 bg-slate-100 rounded-xl overflow-hidden shrink-0">
@@ -4409,7 +4490,7 @@ export default function App() {
         <AnimatePresence>
           {confirmingPayment && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setConfirmingPayment(null)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setConfirmingPayment(null)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1 text-slate-900">Confirmar Pagamento</h3>
@@ -4769,12 +4850,13 @@ export default function App() {
                         </button>
                       </div>
                       <button 
-                        onClick={() => {
-                          if (product.variations && product.variations.length > 0) {
-                            setSelectedProductForVariation(product);
+                        onClick={async () => {
+                          const withVars = await ensureProductVariationsLoaded(product);
+                          if (withVars.variations && withVars.variations.length > 0) {
+                            setSelectedProductForVariation(withVars);
                           } else {
-                            addToCart(product, getPendingQty(product.id));
-                            setPendingQty(product.id, 1);
+                            addToCart(withVars, getPendingQty(withVars.id));
+                            setPendingQty(withVars.id, 1);
                           }
                         }}
                         className="bg-primary/10 text-primary px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-primary hover:text-white transition-all"
@@ -4901,11 +4983,13 @@ export default function App() {
             <div className="fixed inset-0 z-[70] flex items-end justify-center">
               <motion.div 
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: reduceMotion ? 0 : 0.12 }}
                 onClick={() => setSelectedProductForVariation(null)}
-                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/60"
               />
               <motion.div 
                 initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+                transition={{ duration: reduceMotion ? 0 : 0.18 }}
                 className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl"
               >
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
@@ -5009,11 +5093,12 @@ export default function App() {
               <h3 className="font-bold text-sm truncate">{product.name}</h3>
               <p className="text-primary font-black mt-1">R$ {product.price.toLocaleString('pt-BR')}</p>
               <button 
-                onClick={() => {
-                  if (product.variations && product.variations.length > 0) {
-                    setSelectedProductForVariation(product);
+                onClick={async () => {
+                  const withVars = await ensureProductVariationsLoaded(product);
+                  if (withVars.variations && withVars.variations.length > 0) {
+                    setSelectedProductForVariation(withVars);
                   } else {
-                    addToCart(product);
+                    addToCart(withVars);
                   }
                 }} 
                 className="w-full mt-2 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1"
@@ -5037,13 +5122,15 @@ export default function App() {
               initial={{ opacity: 0 }} 
               animate={{ opacity: 1 }} 
               exit={{ opacity: 0 }}
+              transition={{ duration: reduceMotion ? 0 : 0.12 }}
               onClick={() => setSelectedProductForVariation(null)}
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-black/40"
             />
             <motion.div 
               initial={{ y: "100%" }} 
               animate={{ y: 0 }} 
               exit={{ y: "100%" }}
+              transition={{ duration: reduceMotion ? 0 : 0.18 }}
               className="relative w-full max-w-md bg-white rounded-t-3xl p-6 shadow-2xl"
             >
               <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
@@ -5654,7 +5741,7 @@ export default function App() {
         <AnimatePresence>
           {isAddingTransaction && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingTransaction(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingTransaction(false)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl overflow-hidden">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1 text-slate-900">Novo Lançamento</h3>
@@ -5986,7 +6073,7 @@ export default function App() {
         <AnimatePresence>
           {isAddingPromotion && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingPromotion(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingPromotion(false)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1 text-slate-900">{editingPromotion ? 'Editar Promoção' : 'Nova Promoção'}</h3>
@@ -6097,7 +6184,7 @@ export default function App() {
         <AnimatePresence>
           {isAddingAdjustment && (
             <div className="fixed inset-0 z-[100] flex items-end justify-center">
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingAdjustment(false)} className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setIsAddingAdjustment(false)} className="absolute inset-0 bg-black/60" />
               <motion.div initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} className="relative w-full max-w-md bg-white rounded-t-[32px] p-6 shadow-2xl">
                 <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
                 <h3 className="font-black text-lg mb-1 text-slate-900">{editingAdjustment ? 'Editar Ajuste' : 'Novo Ajuste de Pagamento'}</h3>
@@ -6182,6 +6269,7 @@ export default function App() {
     const [isGeneratingBackup, setIsGeneratingBackup] = useState(false);
     const [isUploadingLogo, setIsUploadingLogo] = useState(false);
     const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+    const [isResettingData, setIsResettingData] = useState(false);
     const [localSettings, setLocalSettings] = useState<AppSettings>(appSettings);
     const [localAppConfig, setLocalAppConfig] = useState<UserAppConfig>(userAppConfig);
     const [localProfile, setLocalProfile] = useState<UserProfile>(userProfile);
@@ -6322,6 +6410,59 @@ export default function App() {
         window.open(url, '_blank');
       } catch (error: any) {
         alert('Erro ao baixar backup: ' + (error.message || 'Erro desconhecido'));
+      }
+    };
+
+    const clearLocalAppData = async () => {
+      try { localStorage.clear(); } catch {}
+      try { sessionStorage.clear(); } catch {}
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map(k => caches.delete(k)));
+        }
+      } catch {}
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(r => r.unregister()));
+        }
+      } catch {}
+      try {
+        const anyIDB: any = indexedDB as any;
+        if (typeof anyIDB.databases === 'function') {
+          const dbs = await anyIDB.databases();
+          await Promise.all((dbs || []).map((db: any) => db?.name ? new Promise<void>((resolve) => {
+            const req = indexedDB.deleteDatabase(db.name);
+            req.onsuccess = () => resolve();
+            req.onerror = () => resolve();
+            req.onblocked = () => resolve();
+          }) : Promise.resolve()));
+        }
+      } catch {}
+    };
+
+    const handleResetAllData = async () => {
+      if (isResettingData) return;
+      if (!confirm('Isso irá excluir permanentemente TODOS os dados salvos no aplicativo e no banco de dados da sua conta.')) return;
+      const typed = prompt('Digite EXCLUIR para confirmar a exclusão total dos dados:');
+      if (typed !== 'EXCLUIR') {
+        alert('Ação cancelada.');
+        return;
+      }
+      setIsResettingData(true);
+      try {
+        await supabaseService.resetUserData();
+        await clearLocalAppData();
+        try {
+          await getSupabase().auth.signOut();
+        } catch {}
+        window.location.hash = '#/login';
+        window.location.reload();
+      } catch (error: any) {
+        alert('Erro ao excluir dados: ' + (error?.message || 'Erro desconhecido'));
+      } finally {
+        setIsResettingData(false);
       }
     };
 
@@ -7051,6 +7192,22 @@ export default function App() {
                 {testResult}
               </div>
             )}
+          </section>
+
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-red-200 space-y-4">
+            <h4 className="text-xs font-black text-red-600 uppercase tracking-widest flex items-center gap-2">
+              <Trash2 size={16} /> Zona de Perigo
+            </h4>
+            <p className="text-[10px] text-slate-500 font-bold leading-relaxed uppercase">
+              Exclui produtos, clientes, pedidos, estoque, financeiro, promoções, backups, catálogo público e configurações salvas desta conta.
+            </p>
+            <button
+              onClick={handleResetAllData}
+              disabled={isResettingData}
+              className="w-full h-14 bg-red-500 text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-60"
+            >
+              <Trash2 size={20} /> {isResettingData ? 'Excluindo...' : 'Excluir Todos os Dados'}
+            </button>
           </section>
 
           {/* Botões de Ação */}

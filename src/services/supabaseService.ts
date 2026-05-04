@@ -725,6 +725,37 @@ export const supabaseService = {
     })) as Product[];
   },
 
+  async getProductsLite() {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('name');
+    if (error) throw error;
+    return (data || []).map((p: any) => ({
+      ...p,
+      price: p.sale_price || p.price,
+      variations: Array.isArray(p.product_variations) ? p.product_variations : undefined
+    })) as Product[];
+  },
+
+  async getProductVariations(productId: string) {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('product_variations')
+      .select('*')
+      .eq('product_id', productId);
+    if (error) throw error;
+    return (data || []) as ProductVariation[];
+  },
+
   async addProduct(product: Omit<Product, 'id' | 'variations'>, variations: Omit<ProductVariation, 'id' | 'product_id'>[] = []) {
     const supabase = getSupabase();
     const { data: { user } } = await supabase.auth.getUser();
@@ -898,6 +929,20 @@ export const supabaseService = {
     return data as Client[];
   },
 
+  async getClientsLite() {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('clients')
+      .select('id, name, establishment, phone, whatsapp, address, city, observations, active, source')
+      .eq('user_id', user.id)
+      .order('name');
+    if (error) throw error;
+    return (data || []) as Client[];
+  },
+
   async addClient(client: Omit<Client, 'id'>) {
     const supabase = getSupabase();
     const { data: { user } } = await supabase.auth.getUser();
@@ -961,6 +1006,33 @@ export const supabaseService = {
         quantity: item.quantity,
         price: item.price_at_time
       }))
+    })) as Order[];
+  },
+
+  async getOrdersLite() {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, clients(name, establishment, phone, whatsapp, address, city)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    return (data || []).map((order: any) => ({
+      ...order,
+      clientId: order.client_id,
+      clientName: order.clients?.establishment || order.clients?.name || order.public_customer_name || 'Cliente Desconhecido',
+      client: order.clients,
+      date: order.created_at ? new Date(order.created_at).toLocaleDateString('pt-BR') : '',
+      paymentMethod: order.payment_method,
+      paymentStatus: order.paymentStatus,
+      paid_amount: order.paid_amount,
+      notes: order.notes,
+      deliveryDate: order.delivery_date ? new Date(order.delivery_date).toLocaleDateString('pt-BR') : undefined,
+      items: []
     })) as Order[];
   },
 
@@ -1170,5 +1242,30 @@ export const supabaseService = {
     
     if (error) throw error;
     return data as WhatsAppMessageLog;
+  },
+
+  async resetUserData(): Promise<void> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Não autenticado');
+
+    try {
+      const bucket = supabase.storage.from('backups');
+      let offset = 0;
+      const limit = 100;
+      while (true) {
+        const { data: items, error } = await bucket.list(user.id, { limit, offset });
+        if (error) break;
+        const files = (items || []).filter(i => i.name && (i as any).id !== null).map(i => `${user.id}/${i.name}`);
+        if (files.length > 0) {
+          await bucket.remove(files);
+        }
+        if (!items || items.length < limit) break;
+        offset += limit;
+      }
+    } catch {}
+
+    const { error } = await supabase.rpc('reset_user_data_v1');
+    if (error) throw error;
   },
 };

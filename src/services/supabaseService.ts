@@ -1036,6 +1036,14 @@ export const supabaseService = {
     })) as Order[];
   },
 
+  async deleteOrder(id: string) {
+    const { error } = await getSupabase()
+      .from('orders')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+  },
+
   async confirmPayment(orderId: string, amount: number, isTotal: boolean) {
     const supabase = getSupabase();
     const { data: { user } } = await supabase.auth.getUser();

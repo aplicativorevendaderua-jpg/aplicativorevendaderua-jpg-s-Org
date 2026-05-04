@@ -7099,6 +7099,8 @@ export default function App() {
     const [localProfile, setLocalProfile] = useState<UserProfile>(userProfile);
     const [localPublicCatalog, setLocalPublicCatalog] = useState<PublicCatalog>(publicCatalog || { catalog_slug: '', is_active: false });
     const [newPassword, setNewPassword] = useState('');
+    const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+    const [resetConfirmText, setResetConfirmText] = useState('');
     const tabCategoryMap: Record<string, string> = {
       install: 'app',
       notifications: 'app',
@@ -7385,14 +7387,7 @@ export default function App() {
       } catch {}
     };
 
-    const handleResetAllData = async () => {
-      if (isResettingData) return;
-      if (!confirm('Isso irá excluir permanentemente TODOS os dados salvos no aplicativo e no banco de dados da sua conta.')) return;
-      const typed = prompt('Digite EXCLUIR para confirmar a exclusão total dos dados:');
-      if (typed !== 'EXCLUIR') {
-        alert('Ação cancelada.');
-        return;
-      }
+    const performResetAllData = async () => {
       setIsResettingData(true);
       try {
         await supabaseService.resetUserData();
@@ -7407,6 +7402,12 @@ export default function App() {
       } finally {
         setIsResettingData(false);
       }
+    };
+
+    const handleResetAllData = () => {
+      if (isResettingData) return;
+      setResetConfirmText('');
+      setIsResetConfirmOpen(true);
     };
 
     const slugify = (value: string) => {
@@ -8259,6 +8260,94 @@ export default function App() {
             </button>
           </div>
         </main>
+        <AnimatePresence>
+          {isResetConfirmOpen && (
+            <div className="fixed inset-0 z-[120] flex items-end justify-center">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  if (isResettingData) return;
+                  setIsResetConfirmOpen(false);
+                }}
+                className="absolute inset-0 bg-black/60"
+              />
+              <motion.div
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                className="relative w-full max-w-md md:max-w-2xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl"
+              >
+                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="font-black text-lg text-slate-900">Confirmação Final</h3>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                      Esta ação é irreversível
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (isResettingData) return;
+                      setIsResetConfirmOpen(false);
+                    }}
+                    className="p-2 rounded-full hover:bg-slate-100 text-slate-500"
+                  >
+                    <XCircle size={20} />
+                  </button>
+                </div>
+
+                <div className="mt-5 p-4 rounded-3xl bg-red-50 border border-red-100">
+                  <p className="text-xs font-black text-red-700 uppercase tracking-widest">Você vai apagar todos os dados desta conta</p>
+                  <p className="text-xs font-bold text-red-600 mt-2 leading-relaxed">
+                    Produtos, clientes, pedidos, estoque, financeiro, promoções, backups, catálogo público e configurações.
+                  </p>
+                </div>
+
+                <div className="mt-5 space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Digite EXCLUIR para confirmar</label>
+                  <input
+                    value={resetConfirmText}
+                    onChange={(e) => setResetConfirmText(e.target.value)}
+                    placeholder="EXCLUIR"
+                    className="w-full h-14 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black uppercase tracking-widest outline-none focus:ring-2 focus:ring-red-500"
+                    disabled={isResettingData}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="mt-6 grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      if (isResettingData) return;
+                      setIsResetConfirmOpen(false);
+                    }}
+                    className="h-14 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase tracking-widest text-xs active:scale-95 transition-all"
+                    disabled={isResettingData}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (isResettingData) return;
+                      if (resetConfirmText !== 'EXCLUIR') {
+                        alert('Digite EXCLUIR exatamente para confirmar.');
+                        return;
+                      }
+                      setIsResetConfirmOpen(false);
+                      await performResetAllData();
+                    }}
+                    className="h-14 rounded-2xl bg-red-500 text-white font-black uppercase tracking-widest text-xs shadow-lg shadow-red-500/20 disabled:opacity-60 active:scale-95 transition-all"
+                    disabled={isResettingData || resetConfirmText !== 'EXCLUIR'}
+                  >
+                    {isResettingData ? 'Excluindo...' : 'Excluir Tudo'}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
         <BottomNav />
       </div>
     );

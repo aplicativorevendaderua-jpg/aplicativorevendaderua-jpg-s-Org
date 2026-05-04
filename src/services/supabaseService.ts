@@ -1273,7 +1273,54 @@ export const supabaseService = {
       }
     } catch {}
 
-    const { error } = await supabase.rpc('reset_user_data_v1');
-    if (error) throw error;
+    const { error: rpcError } = await supabase.rpc('reset_user_data_v1');
+    if (!rpcError) return;
+
+    const msg = String((rpcError as any)?.message || '');
+    const code = String((rpcError as any)?.code || '');
+    const isMissingFunction =
+      msg.includes('Could not find the function') ||
+      msg.includes('schema cache') ||
+      code === 'PGRST202';
+
+    if (!isMissingFunction) {
+      throw rpcError;
+    }
+
+    const errors: string[] = [];
+    const safeDeleteByUserId = async (table: string) => {
+      try {
+        const { error } = await supabase.from(table).delete().eq('user_id', user.id);
+        if (error) errors.push(`${table}: ${error.message}`);
+      } catch (e: any) {
+        errors.push(`${table}: ${e?.message || 'erro'}`);
+      }
+    };
+
+    await safeDeleteByUserId('whatsapp_message_logs');
+    await safeDeleteByUserId('whatsapp_config');
+    await safeDeleteByUserId('payment_adjustments');
+    await safeDeleteByUserId('promotions');
+    await safeDeleteByUserId('transactions');
+    await safeDeleteByUserId('stock_history');
+    await safeDeleteByUserId('backups');
+    await safeDeleteByUserId('orders');
+    await safeDeleteByUserId('clients');
+    await safeDeleteByUserId('products');
+    await safeDeleteByUserId('categories');
+    await safeDeleteByUserId('public_catalogs');
+    await safeDeleteByUserId('settings');
+    await safeDeleteByUserId('app_config');
+
+    try {
+      const { error } = await supabase.from('profiles').delete().eq('id', user.id);
+      if (error) errors.push(`profiles: ${error.message}`);
+    } catch (e: any) {
+      errors.push(`profiles: ${e?.message || 'erro'}`);
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Falha ao excluir alguns dados:\n${errors.slice(0, 12).join('\n')}${errors.length > 12 ? '\n…' : ''}`);
+    }
   },
 };

@@ -3023,6 +3023,12 @@ export default function App() {
     const [historyData, setHistoryData] = useState<StockHistory[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
     const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+    const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
+    const [bulkCsvFile, setBulkCsvFile] = useState<File | null>(null);
+    const [bulkImageFiles, setBulkImageFiles] = useState<File[]>([]);
+    const [isBulkImporting, setIsBulkImporting] = useState(false);
+    const [bulkImportProgress, setBulkImportProgress] = useState<{ total: number; processed: number; added: number; skipped: number; failed: number } | null>(null);
+    const [bulkImportMessages, setBulkImportMessages] = useState<string[]>([]);
 
     const categoriesList = useMemo(() => ['Todas', ...Array.from(new Set(products.map(p => p.category)))].sort(), [products]);
 
@@ -3083,14 +3089,277 @@ export default function App() {
       }
     };
 
+    const downloadTextFile = (filename: string, content: string, mime: string) => {
+      const blob = new Blob([content], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    };
+
+    const csvEscape = (value: any, delimiter: string) => {
+      const s = String(value ?? '');
+      const needs = s.includes('"') || s.includes('\n') || s.includes('\r') || s.includes(delimiter);
+      if (!needs) return s;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
+
+    const handleDownloadProductsTemplate = () => {
+      const delimiter = ';';
+      const headers = [
+        'name',
+        'category',
+        'purchase_price',
+        'sale_price',
+        'stock',
+        'description',
+        'available',
+        'unidade_medida',
+        'quantidade_unidade',
+        'controla_estoque',
+        'limite_por_pedido',
+        'image_url',
+        'image_filename'
+      ];
+      const sample = {
+        name: 'Produto Exemplo',
+        category: 'Categoria Exemplo',
+        purchase_price: 10.5,
+        sale_price: 19.9,
+        stock: 25,
+        description: 'Descrição do produto',
+        available: true,
+        unidade_medida: 'un',
+        quantidade_unidade: 1,
+        controla_estoque: true,
+        limite_por_pedido: '',
+        image_url: '',
+        image_filename: 'foto-produto-exemplo.jpg'
+      };
+      const lines = [
+        headers.join(delimiter),
+        headers.map(h => csvEscape((sample as any)[h], delimiter)).join(delimiter)
+      ];
+      downloadTextFile('modelo_importacao_produtos.csv', lines.join('\n'), 'text/csv;charset=utf-8');
+    };
+
+    const splitCsvLine = (line: string, delimiter: string) => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+          continue;
+        }
+        if (!inQuotes && ch === delimiter) {
+          result.push(current);
+          current = '';
+          continue;
+        }
+        current += ch;
+      }
+      result.push(current);
+      return result.map(v => v.trim());
+    };
+
+    const parseCsv = (text: string) => {
+      const rawLines = String(text || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 0);
+      if (rawLines.length === 0) return { headers: [] as string[], rows: [] as string[][], delimiter: ';' };
+      const headerLine = rawLines[0];
+      const commaCount = (headerLine.match(/,/g) || []).length;
+      const semiCount = (headerLine.match(/;/g) || []).length;
+      const delimiter = semiCount >= commaCount ? ';' : ',';
+      const headers = splitCsvLine(headerLine, delimiter).map(h => h.trim());
+      const rows = rawLines.slice(1).map(line => splitCsvLine(line, delimiter));
+      return { headers, rows, delimiter };
+    };
+
+    const parseBool = (value: any, defaultValue: boolean) => {
+      if (value === undefined || value === null || String(value).trim() === '') return defaultValue;
+      const s = String(value).trim().toLowerCase();
+      if (['1', 'true', 'sim', 's', 'yes', 'y'].includes(s)) return true;
+      if (['0', 'false', 'nao', 'não', 'n', 'no'].includes(s)) return false;
+      return defaultValue;
+    };
+
+    const parseNumberPt = (value: any, defaultValue: number) => {
+      if (value === undefined || value === null) return defaultValue;
+      const raw = String(value).trim();
+      if (!raw) return defaultValue;
+      const normalized = raw.replace(/\./g, '').replace(',', '.');
+      const n = Number(normalized);
+      return Number.isFinite(n) ? n : defaultValue;
+    };
+
+    const startBulkImport = async () => {
+      if (isBulkImporting) return;
+      if (!bulkCsvFile) {
+        alert('Selecione o arquivo CSV da lista de produtos.');
+        return;
+      }
+      setIsBulkImporting(true);
+      setBulkImportMessages([]);
+      setBulkImportProgress(null);
+      try {
+        const text = await bulkCsvFile.text();
+        const { headers, rows } = parseCsv(text);
+        if (headers.length === 0) throw new Error('CSV vazio.');
+
+        const headerMap = new Map<string, number>();
+        headers.forEach((h, idx) => headerMap.set(String(h).trim().toLowerCase(), idx));
+
+        const get = (row: string[], keys: string[]) => {
+          for (const key of keys) {
+            const idx = headerMap.get(key);
+            if (idx === undefined) continue;
+            return row[idx] ?? '';
+          }
+          return '';
+        };
+
+        const imageMap = new Map<string, File>();
+        for (const f of bulkImageFiles) {
+          imageMap.set(f.name, f);
+        }
+
+        const existingByName = new Set(products.map(p => (p.name || '').trim().toLowerCase()).filter(Boolean));
+        const total = rows.length;
+        const progress = { total, processed: 0, added: 0, skipped: 0, failed: 0 };
+        setBulkImportProgress({ ...progress });
+
+        const messages: string[] = [];
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          const line = i + 2;
+
+          const name = String(get(r, ['name', 'nome'])).trim();
+          const category = String(get(r, ['category', 'categoria'])).trim();
+          if (!name || !category) {
+            progress.failed += 1;
+            messages.push(`Linha ${line}: nome e categoria são obrigatórios.`);
+            progress.processed += 1;
+            setBulkImportProgress({ ...progress });
+            continue;
+          }
+
+          const key = name.toLowerCase();
+          if (existingByName.has(key)) {
+            progress.skipped += 1;
+            messages.push(`Linha ${line}: "${name}" já existe, ignorado.`);
+            progress.processed += 1;
+            setBulkImportProgress({ ...progress });
+            continue;
+          }
+
+          const purchase_price = parseNumberPt(get(r, ['purchase_price', 'preco_custo', 'custo']), 0);
+          const sale_price = parseNumberPt(get(r, ['sale_price', 'preco_venda', 'preco']), 0);
+          const stock = Math.max(0, Math.floor(parseNumberPt(get(r, ['stock', 'estoque']), 0)));
+          const description = String(get(r, ['description', 'descricao', 'descrição'])).trim();
+          const available = parseBool(get(r, ['available', 'ativo', 'disponivel', 'disponível']), true);
+          const unidade_medida = String(get(r, ['unidade_medida', 'unidade'])).trim() || 'un';
+          const quantidade_unidade = Math.max(1, parseNumberPt(get(r, ['quantidade_unidade']), 1));
+          const controla_estoque = parseBool(get(r, ['controla_estoque']), true);
+          const limiteRaw = String(get(r, ['limite_por_pedido'])).trim();
+          const limite_por_pedido = limiteRaw ? Math.max(1, Math.floor(parseNumberPt(limiteRaw, 0))) : undefined;
+
+          const image_url_raw = String(get(r, ['image_url', 'imagem_url', 'url_imagem', 'image'])).trim();
+          const image_filename = String(get(r, ['image_filename', 'imagem_arquivo', 'arquivo_imagem'])).trim();
+
+          let image = image_url_raw;
+          if (image_filename) {
+            const file = imageMap.get(image_filename);
+            if (file) {
+              try {
+                image = await supabaseService.uploadProductImage(file);
+              } catch (e: any) {
+                messages.push(`Linha ${line}: falha ao subir imagem "${image_filename}".`);
+              }
+            } else {
+              messages.push(`Linha ${line}: imagem "${image_filename}" não encontrada nos arquivos selecionados.`);
+            }
+          }
+
+          try {
+            const created = await supabaseService.addProduct({
+              name,
+              category,
+              purchase_price,
+              sale_price,
+              price: sale_price,
+              stock,
+              description,
+              image,
+              available,
+              unidade_medida,
+              quantidade_unidade,
+              controla_estoque,
+              limite_por_pedido,
+            } as any);
+            existingByName.add(key);
+            progress.added += 1;
+            if (created) {
+              setProducts(prev => [created as any, ...prev]);
+            }
+          } catch (e: any) {
+            progress.failed += 1;
+            messages.push(`Linha ${line}: erro ao importar "${name}".`);
+          } finally {
+            progress.processed += 1;
+            setBulkImportProgress({ ...progress });
+          }
+        }
+
+        try {
+          const updated = await supabaseService.getProducts();
+          setProducts(updated);
+        } catch {}
+
+        setBulkImportMessages(messages.slice(0, 200));
+        if (progress.failed === 0) {
+          alert(`Importação concluída: ${progress.added} adicionados, ${progress.skipped} ignorados.`);
+        } else {
+          alert(`Importação concluída: ${progress.added} adicionados, ${progress.skipped} ignorados, ${progress.failed} com erro.`);
+        }
+      } catch (e: any) {
+        alert('Erro ao importar: ' + (e?.message || 'Erro desconhecido'));
+      } finally {
+        setIsBulkImporting(false);
+      }
+    };
+
     return (
       <div className="min-h-screen bg-background-light pb-24">
         <Header 
           title="Produtos" 
           rightElement={
-            <button onClick={() => { setProductToEdit(null); navigate('product-form'); }} className="p-2 bg-primary text-white rounded-full">
-              <Plus size={24} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsBulkImportOpen(true)}
+                className="p-2 bg-white border border-slate-200 text-slate-700 rounded-full"
+                title="Importar lista"
+              >
+                <FileText size={22} />
+              </button>
+              <button onClick={() => { setProductToEdit(null); navigate('product-form'); }} className="p-2 bg-primary text-white rounded-full">
+                <Plus size={24} />
+              </button>
+            </div>
           }
         />
         
@@ -3221,6 +3490,147 @@ export default function App() {
                 </button>
               </div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {isBulkImportOpen && (
+            <div className="fixed inset-0 z-[110] flex items-end justify-center">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => {
+                  if (isBulkImporting) return;
+                  setIsBulkImportOpen(false);
+                }}
+                className="absolute inset-0 bg-black/60"
+              />
+              <motion.div
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                className="relative w-full max-w-md md:max-w-3xl bg-white rounded-t-[32px] md:rounded-[32px] p-6 shadow-2xl flex flex-col max-h-[85vh] overflow-hidden"
+              >
+                <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-6" />
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="font-black text-lg mb-1">Importar Lista de Produtos</h3>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                      CSV + fotos opcionais por nome do arquivo
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (isBulkImporting) return;
+                      setIsBulkImportOpen(false);
+                    }}
+                    className="p-2 rounded-full hover:bg-slate-100 text-slate-500"
+                  >
+                    <XCircle size={20} />
+                  </button>
+                </div>
+
+                <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-3xl bg-slate-50 border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Modelo</p>
+                      <button
+                        onClick={handleDownloadProductsTemplate}
+                        className="px-3 py-2 rounded-2xl bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest flex items-center gap-2"
+                      >
+                        <Download size={14} /> Baixar CSV Modelo
+                      </button>
+                    </div>
+                    <p className="text-xs font-bold text-slate-600 leading-relaxed">
+                      Preencha o CSV e, para fotos, use a coluna image_filename (ex: foto1.jpg) e selecione as imagens junto com o CSV.
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-3xl bg-white border border-slate-200 space-y-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Arquivo CSV</label>
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        disabled={isBulkImporting}
+                        onChange={(e) => setBulkCsvFile(e.target.files?.[0] || null)}
+                        className="w-full"
+                      />
+                      {bulkCsvFile && (
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{bulkCsvFile.name}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Fotos (opcional)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        disabled={isBulkImporting}
+                        onChange={(e) => setBulkImageFiles(Array.from(e.target.files || []))}
+                        className="w-full"
+                      />
+                      {bulkImageFiles.length > 0 && (
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{bulkImageFiles.length} arquivo(s) selecionado(s)</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {bulkImportProgress && (
+                  <div className="mt-5 p-4 rounded-3xl bg-slate-900 text-white border border-slate-800">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                        Progresso: {bulkImportProgress.processed}/{bulkImportProgress.total}
+                      </p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-300">
+                        OK {bulkImportProgress.added} • Ign {bulkImportProgress.skipped} • Err {bulkImportProgress.failed}
+                      </p>
+                    </div>
+                    <div className="mt-3 h-2 rounded-full bg-white/10 overflow-hidden">
+                      <div
+                        className="h-full bg-primary"
+                        style={{ width: `${bulkImportProgress.total > 0 ? Math.min(100, Math.round((bulkImportProgress.processed / bulkImportProgress.total) * 100)) : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {bulkImportMessages.length > 0 && (
+                  <div className="mt-5 p-4 rounded-3xl bg-white border border-slate-200 overflow-auto">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Mensagens</p>
+                    <div className="space-y-2">
+                      {bulkImportMessages.slice(0, 30).map((m, idx) => (
+                        <div key={idx} className="text-xs font-bold text-slate-600 break-words">
+                          {m}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-auto pt-6 grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => {
+                      if (isBulkImporting) return;
+                      setIsBulkImportOpen(false);
+                    }}
+                    className="h-14 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase tracking-widest text-xs active:scale-95 transition-all"
+                  >
+                    Fechar
+                  </button>
+                  <button
+                    onClick={startBulkImport}
+                    disabled={isBulkImporting}
+                    className="h-14 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20 disabled:opacity-60 active:scale-95 transition-all"
+                  >
+                    {isBulkImporting ? 'Importando...' : 'Importar'}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
           )}
         </AnimatePresence>
 

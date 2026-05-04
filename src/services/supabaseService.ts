@@ -1,5 +1,5 @@
 import { getSupabase } from '../lib/supabase';
-import { Product, Client, Order, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment } from '../types';
+import { Product, Client, Order, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment, WhatsAppConfig, WhatsAppMessageLog } from '../types';
 
 export const supabaseService = {
   // --- PROMOTIONS ---
@@ -1050,6 +1050,28 @@ export const supabaseService = {
 
     if (itemsError) throw itemsError;
 
+    if (user?.id) {
+      try {
+        const totalFormatted = Number(order.total || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 });
+        const payload = {
+          body: {
+            user_id: user.id,
+            title: `Pedido de ${order.clientName || 'Cliente'}`,
+            body: `Novo pedido no valor de R$ ${totalFormatted}.`,
+            data: {
+              orderId: orderData.id,
+              url: `/#/orders?orderId=${encodeURIComponent(orderData.id)}`
+            }
+          }
+        };
+
+        const primary = await supabase.functions.invoke('send-push-notification', payload);
+        if ((primary as any)?.error) {
+          await supabase.functions.invoke('enviar-notificacao-push', payload);
+        }
+      } catch {}
+    }
+
     return {
       ...orderData,
       clientId: orderData.client_id,
@@ -1082,5 +1104,71 @@ export const supabaseService = {
       .eq('order_id', orderId);
     if (error) throw error;
     return data;
+  },
+
+  // --- WHATSAPP INTEGRATION ---
+  async getWhatsAppConfig(): Promise<WhatsAppConfig | null> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+
+    const { data, error } = await supabase
+      .from('whatsapp_config')
+      .select('*')
+      .eq('user_id', user.id)
+      .maybeSingle();
+    
+    if (error && error.code !== 'PGRST116') throw error;
+    return data as WhatsAppConfig | null;
+  },
+
+  async upsertWhatsAppConfig(config: Partial<WhatsAppConfig>): Promise<WhatsAppConfig> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Não autenticado');
+
+    const { data, error } = await supabase
+      .from('whatsapp_config')
+      .upsert({ 
+        ...config, 
+        user_id: user.id, 
+        updated_at: new Date().toISOString() 
+      }, { onConflict: 'user_id' })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    return data as WhatsAppConfig;
+  },
+
+  async getWhatsAppMessageLogs(limit = 50): Promise<WhatsAppMessageLog[]> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+
+    const { data, error } = await supabase
+      .from('whatsapp_message_logs')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    
+    if (error) throw error;
+    return data as WhatsAppMessageLog[];
+  },
+
+  async addWhatsAppMessageLog(log: Omit<WhatsAppMessageLog, 'id' | 'user_id' | 'created_at'>): Promise<WhatsAppMessageLog> {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Não autenticado');
+
+    const { data, error } = await supabase
+      .from('whatsapp_message_logs')
+      .insert({ ...log, user_id: user.id })
+      .select()
+      .single();
+    
+    if (error) throw error;
+    return data as WhatsAppMessageLog;
   },
 };

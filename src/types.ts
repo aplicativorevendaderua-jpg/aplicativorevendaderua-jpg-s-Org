@@ -134,7 +134,9 @@ export type Page =
   | 'finance' 
   | 'settings' 
   | 'profile' 
-  | 'promotions';
+  | 'promotions'
+  | 'whatsapp-config'
+  | 'whatsapp-logs';
 
 export interface Transaction {
   id: string;
@@ -234,4 +236,32 @@ export interface PublicCatalog {
   user_id?: string;
   catalog_slug: string;
   is_active: boolean;
+}
+
+export interface WhatsAppConfig {
+  id?: string;
+  user_id?: string;
+  service_provider: string;
+  api_key?: string;
+  api_url?: string;
+  instance_id?: string;
+  owner_whatsapp_number?: string;
+  enable_owner_notifications: boolean;
+  enable_customer_notifications: boolean;
+  customer_notification_delay_minutes: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface WhatsAppMessageLog {
+  id?: string;
+  user_id?: string;
+  order_id?: string;
+  recipient_type: 'owner' | 'customer' | 'test';
+  recipient_number: string;
+  message_type: 'text' | 'image' | 'document';
+  status: 'pending' | 'sent' | 'delivered' | 'failed';
+  error_message?: string;
+  sent_at?: string;
+  created_at?: string;
 }

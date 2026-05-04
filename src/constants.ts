@@ -12,6 +12,9 @@ export const MOCK_PRODUCTS: Product[] = [
     description: 'Relógio inteligente moderno branco e minimalista.',
     image: 'https://picsum.photos/seed/watch/400/400',
     available: true,
+    unidade_medida: 'un',
+    quantidade_unidade: 1,
+    controla_estoque: true,
   },
   {
     id: '2',
@@ -24,6 +27,9 @@ export const MOCK_PRODUCTS: Product[] = [
     description: 'Fones de ouvido bluetooth pretos profissionais.',
     image: 'https://picsum.photos/seed/headphone/400/400',
     available: true,
+    unidade_medida: 'un',
+    quantidade_unidade: 1,
+    controla_estoque: true,
   },
   {
     id: '3',
@@ -36,6 +42,9 @@ export const MOCK_PRODUCTS: Product[] = [
     description: 'Tablet cinza com caneta stylus ao lado.',
     image: 'https://picsum.photos/seed/tablet/400/400',
     available: true,
+    unidade_medida: 'un',
+    quantidade_unidade: 1,
+    controla_estoque: true,
   },
   {
     id: '4',
@@ -48,6 +57,9 @@ export const MOCK_PRODUCTS: Product[] = [
     description: 'Câmera fotográfica vintage profissional preta.',
     image: 'https://picsum.photos/seed/camera/400/400',
     available: false,
+    unidade_medida: 'un',
+    quantidade_unidade: 1,
+    controla_estoque: true,
   },
 ];
 

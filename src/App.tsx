@@ -70,9 +70,10 @@ import {
   Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment } from './types';
+import { Page, Product, Client, Order, OrderStatus, Category, ProductVariation, AppSettings, UserAppConfig, BackupEntry, UserProfile, PublicCatalog, StockHistory, Transaction, FinanceSummary, Promotion, PaymentAdjustment, WhatsAppConfig, WhatsAppMessageLog } from './types';
 import { supabaseService } from './services/supabaseService';
 import { getSupabase, isSupabaseConfigured } from './lib/supabase';
+import { clearAppBadge, ensurePushSubscription, listenToServiceWorkerMessages, requestBadgeCountFromServiceWorker, setAppBadge } from './lib/pushNotifications';
 
 function generateBoletoLine(amount: number) {
   const valueStr = Math.floor(amount * 100).toString().padStart(10, '0');
@@ -228,11 +229,103 @@ export default function App() {
     items?: Array<{ name: string; quantity: number; price: number }>;
     total?: number;
   }>>([]);
+  const [swBadgeCount, setSwBadgeCount] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isIOS, setIsIOS] = useState(false);
   const [showInstallCard, setShowInstallCard] = useState(true);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | 'default' | 'granted' | 'denied'>('default');
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('flux_notifications');
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) setNotifications(parsed);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('flux_notifications', JSON.stringify(notifications.slice(0, 50)));
+    } catch {}
+  }, [notifications]);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const cleanup = listenToServiceWorkerMessages({
+      onBadgeCount: (count) => setSwBadgeCount(count),
+    });
+    requestBadgeCountFromServiceWorker();
+    return cleanup;
+  }, []);
+
+  useEffect(() => {
+    const unread = notifications.filter(n => !n.read).length;
+    const effective = Math.max(unread, swBadgeCount);
+    if (effective > 0) {
+      setAppBadge(effective);
+    } else {
+      clearAppBadge();
+    }
+  }, [notifications, swBadgeCount]);
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      alert('Este navegador não suporta notificações.');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === 'granted') {
+        console.log('Permissão para notificações concedida!');
+        new Notification('FLUX', {
+          body: 'Notificações ativadas! Você receberá alertas de novos pedidos.',
+          icon: '/icon.png',
+          badge: '/icon.png'
+        });
+        if (userProfile.id) {
+          ensurePushSubscription(getSupabase(), userProfile.id).catch(() => {});
+        }
+      }
+    } catch (error) {
+      console.error('Erro ao solicitar permissão de notificações:', error);
+    }
+  };
+
+  const sendLocalNotification = (title: string, body: string, data?: { orderId?: string }) => {
+    if (notificationPermission === 'granted' && 'Notification' in window) {
+      const n = new Notification(title, {
+        body,
+        icon: '/icon.png',
+        badge: '/pwa-72x72.png',
+        tag: data?.orderId ? `order-${data.orderId}` : `flux-${Date.now()}`,
+        renotify: true,
+        requireInteraction: true,
+        silent: false,
+        data
+      } as NotificationOptions);
+      n.onclick = () => {
+        window.focus();
+        if (data?.orderId) navigate('orders');
+      };
+    }
+  };
+
+  useEffect(() => {
+    if ('Notification' in window) {
+      setNotificationPermission(Notification.permission);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!userProfile.id) return;
+    if (notificationPermission !== 'granted') return;
+    if (userAppConfig && userAppConfig.notifications_enabled === false) return;
+    ensurePushSubscription(getSupabase(), userProfile.id).catch(() => {});
+  }, [userProfile.id, notificationPermission, userAppConfig?.notifications_enabled]);
 
   useEffect(() => {
     // Detectar iOS
@@ -278,6 +371,10 @@ export default function App() {
     if (outcome === 'accepted') {
       setDeferredPrompt(null);
       setShowInstallCard(false);
+      
+      setTimeout(() => {
+        requestNotificationPermission();
+      }, 1000);
     }
   };
 
@@ -327,6 +424,7 @@ export default function App() {
           const newOrder = payload.new as any;
           
           if (newOrder.user_id === userProfile.id && userProfile.id) {
+            if (userAppConfig && userAppConfig.notifications_enabled === false) return;
             playNotificationSound();
             
             // Buscar itens do pedido e nome do cliente para a notificação
@@ -377,6 +475,7 @@ export default function App() {
               isNewClient: !newOrder.client_id
             };
             
+            sendLocalNotification(notification.title, notification.message, { orderId: newOrder.id });
             setNotifications((prev: any[]) => [notification, ...prev]);
             fetchData();
           }
@@ -387,7 +486,7 @@ export default function App() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [userProfile.id]);
+  }, [userProfile.id, userAppConfig?.notifications_enabled, notificationPermission]);
 
   const selectedClient = useMemo(() => 
     clients.find((c: Client) => c.id === selectedClientId) || null
@@ -671,11 +770,10 @@ export default function App() {
 
     return (
       <aside className="hidden md:flex flex-col w-64 bg-white border-r border-slate-100 h-screen sticky top-0 p-6 overflow-y-auto">
-        <div className="flex items-center gap-3 mb-10 px-2">
-          <img src="/logo.png" alt="FLUX" className="h-8 w-auto object-contain" onError={(e) => {
-            (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+        <div className="flex justify-center mb-10 px-2">
+          <img src="/logo.png" alt="FLUX" className="h-20 w-auto object-contain" onError={(e) => {
+            (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
           }} />
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight">FLUX</h1>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -1272,70 +1370,110 @@ export default function App() {
             <div className="absolute -top-24 -right-24 size-48 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
             <div className="absolute -bottom-24 -left-24 size-48 bg-primary/5 rounded-full blur-3xl pointer-events-none"></div>
 
-            {/* Cabeçalho do Footer (Logo e Nome) */}
-            <div className="space-y-4 relative z-10">
-              {publicCatalogInfo?.store_logo ? (
-                <img src={publicCatalogInfo.store_logo} alt="Logo" className="size-16 object-cover rounded-2xl shadow-sm mx-auto border border-slate-100" />
-              ) : (
-                <div className="size-16 bg-slate-50 text-primary rounded-2xl flex items-center justify-center mx-auto shadow-sm border border-slate-100">
-                  <Store size={32} />
-                </div>
+            {/* Título do Footer */}
+            <div className="space-y-2 relative z-10">
+              <h2 className="font-black text-slate-900 text-2xl tracking-tight">{publicCatalogInfo?.store_name || 'Catálogo Online'}</h2>
+              {publicCatalogInfo?.tax_id && (
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">CNPJ/CPF: {publicCatalogInfo.tax_id}</p>
               )}
-              <div>
-                <h2 className="font-black text-slate-900 text-xl tracking-tight">{publicCatalogInfo?.store_name || 'Catálogo Online'}</h2>
-                {publicCatalogInfo?.tax_id && (
-                  <p className="text-[10px] font-bold text-slate-400 mt-1.5 uppercase tracking-widest">CNPJ/CPF: {publicCatalogInfo.tax_id}</p>
-                )}
-              </div>
             </div>
 
-            <div className="w-12 h-1 bg-slate-100 rounded-full mx-auto relative z-10"></div>
+            <div className="w-16 h-1 bg-gradient-to-r from-transparent via-slate-200 to-transparent rounded-full mx-auto relative z-10"></div>
 
             {/* Informações de Contato */}
-            {(publicCatalogInfo?.store_phone || publicCatalogInfo?.store_address) && (
-              <div className="space-y-3 relative z-10">
-                {publicCatalogInfo.store_phone && (
-                  <a href={`https://wa.me/55${publicCatalogInfo.store_phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-600 flex items-center justify-center gap-2 hover:text-primary transition-colors">
-                    <div className="size-8 rounded-full bg-slate-50 flex items-center justify-center text-primary border border-slate-100">
-                      <Phone size={14} />
-                    </div>
-                    {publicCatalogInfo.store_phone}
-                  </a>
-                )}
-                {publicCatalogInfo.store_address && (
-                  <div className="text-sm font-bold text-slate-600 flex items-center justify-center gap-2 max-w-[280px] md:max-w-sm mx-auto leading-relaxed">
-                    <div className="size-8 rounded-full bg-slate-50 flex items-center justify-center text-primary shrink-0 border border-slate-100">
-                      <MapPin size={14} />
-                    </div>
-                    {publicCatalogInfo.store_address}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-lg relative z-10">
+              {publicCatalogInfo?.store_phone && (
+                <a href={`https://wa.me/55${publicCatalogInfo.store_phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:bg-slate-100 hover:border-slate-200 transition-all">
+                  <div className="size-10 rounded-full bg-green-500 text-white flex items-center justify-center shrink-0">
+                    <Phone size={18} />
                   </div>
-                )}
-              </div>
-            )}
+                  <div className="text-left">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">WhatsApp</p>
+                    <p className="text-sm font-bold text-slate-700">{publicCatalogInfo.store_phone}</p>
+                  </div>
+                </a>
+              )}
+              {publicCatalogInfo?.store_address && (
+                <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                  <div className="size-10 rounded-full bg-primary text-white flex items-center justify-center shrink-0">
+                    <MapPin size={18} />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Endereço</p>
+                    <p className="text-sm font-bold text-slate-700 leading-relaxed">{publicCatalogInfo.store_address}</p>
+                  </div>
+                </div>
+              )}
+              {publicCatalogInfo?.store_email && (
+                <a href={`mailto:${publicCatalogInfo.store_email}`} className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-100 hover:bg-slate-100 hover:border-slate-200 transition-all">
+                  <div className="size-10 rounded-full bg-blue-500 text-white flex items-center justify-center shrink-0">
+                    <Mail size={18} />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">E-mail</p>
+                    <p className="text-sm font-bold text-slate-700">{publicCatalogInfo.store_email}</p>
+                  </div>
+                </a>
+              )}
+              {publicCatalogInfo?.pix_key && (
+                <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                  <div className="size-10 rounded-full bg-purple-500 text-white flex items-center justify-center shrink-0">
+                    <QrCode size={18} />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">PIX</p>
+                    <p className="text-sm font-bold text-slate-700">{publicCatalogInfo.pix_key}</p>
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Redes Sociais */}
             {(publicCatalogInfo?.instagram || publicCatalogInfo?.facebook || publicCatalogInfo?.tiktok) && (
-              <div className="flex items-center justify-center gap-3 relative z-10">
-                {publicCatalogInfo.instagram && (
-                  <a href={publicCatalogInfo.instagram.startsWith('http') ? publicCatalogInfo.instagram : `https://instagram.com/${publicCatalogInfo.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-gradient-to-tr hover:from-amber-500 hover:via-pink-500 hover:to-purple-500 hover:text-white transition-all duration-300 shadow-sm hover:shadow-pink-500/30">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>
-                  </a>
-                )}
-                {publicCatalogInfo.facebook && (
-                  <a href={publicCatalogInfo.facebook.startsWith('http') ? publicCatalogInfo.facebook : `https://facebook.com/${publicCatalogInfo.facebook}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-blue-600 hover:text-white transition-all duration-300 shadow-sm hover:shadow-blue-600/30">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"></path></svg>
-                  </a>
-                )}
-                {publicCatalogInfo.tiktok && (
-                  <a href={publicCatalogInfo.tiktok.startsWith('http') ? publicCatalogInfo.tiktok : `https://tiktok.com/@${publicCatalogInfo.tiktok.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-12 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-1 hover:bg-black hover:text-white transition-all duration-300 shadow-sm hover:shadow-black/30">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"></path></svg>
-                  </a>
-                )}
+              <div className="space-y-4 relative z-10 w-full">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Siga-nos nas redes sociais</p>
+                <div className="flex items-center justify-center gap-4">
+                  {publicCatalogInfo.instagram && (
+                    <a href={publicCatalogInfo.instagram.startsWith('http') ? publicCatalogInfo.instagram : `https://instagram.com/${publicCatalogInfo.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-14 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-2 hover:bg-gradient-to-tr hover:from-amber-500 hover:via-pink-500 hover:to-purple-500 hover:text-white transition-all duration-300 shadow-md hover:shadow-pink-500/40">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-6"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>
+                    </a>
+                  )}
+                  {publicCatalogInfo.facebook && (
+                    <a href={publicCatalogInfo.facebook.startsWith('http') ? publicCatalogInfo.facebook : `https://facebook.com/${publicCatalogInfo.facebook}`} target="_blank" rel="noreferrer" className="size-14 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-2 hover:bg-blue-600 hover:text-white transition-all duration-300 shadow-md hover:shadow-blue-600/40">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-6"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"></path></svg>
+                    </a>
+                  )}
+                  {publicCatalogInfo.tiktok && (
+                    <a href={publicCatalogInfo.tiktok.startsWith('http') ? publicCatalogInfo.tiktok : `https://tiktok.com/@${publicCatalogInfo.tiktok.replace('@', '')}`} target="_blank" rel="noreferrer" className="size-14 rounded-2xl bg-slate-50 border border-slate-100 text-slate-600 flex items-center justify-center hover:-translate-y-2 hover:bg-black hover:text-white transition-all duration-300 shadow-md hover:shadow-black/40">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-6"><path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5"></path></svg>
+                    </a>
+                  )}
+                </div>
               </div>
             )}
+
+            <div className="w-full h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent relative z-10"></div>
+
+            {/* Seção do FLUX */}
+            <div className="space-y-4 relative z-10 w-full">
+              <div className="flex items-center justify-center gap-4 p-4 rounded-2xl bg-gradient-to-r from-primary/5 to-indigo-50 border border-primary/10">
+                <img src="/logo.png" alt="FLUX" className="h-12 w-auto object-contain" onError={(e) => {
+                  (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+                }} />
+                <div className="text-left">
+                  <h3 className="font-black text-slate-800 text-lg">FLUX</h3>
+                  <p className="text-xs font-bold text-slate-500">Sistema de Vendas e Catálogo Online</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-bold text-slate-600">Quer ter seu próprio catálogo?</p>
+                <p className="text-[11px] text-slate-500">Use o FLUX para gerenciar seu negócio, criar catálogos online e receber pedidos de forma simples e profissional.</p>
+              </div>
+            </div>
             
             <div className="pt-2 opacity-40 relative z-10">
-               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">FLUX • Feito para você</p>
+               <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">© {new Date().getFullYear()} {publicCatalogInfo?.store_name || 'Catálogo Online'} • Todos os direitos reservados</p>
+               <p className="text-[9px] font-bold text-slate-400 mt-1">Powered by FLUX</p>
             </div>
           </footer>
         </main>
@@ -2198,7 +2336,14 @@ export default function App() {
               </button>
             )}
             <button 
-              onClick={() => setShowNotifications(!showNotifications)}
+              onClick={() => {
+                const next = !showNotifications;
+                setShowNotifications(next);
+                if (next) {
+                  setSwBadgeCount(0);
+                  clearAppBadge();
+                }
+              }}
               className={`relative p-3 rounded-2xl transition-all ${showNotifications ? 'bg-primary text-white shadow-lg shadow-primary/20' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}
             >
               <Bell size={22} />
@@ -2219,7 +2364,11 @@ export default function App() {
                   <div className="p-4 border-b border-slate-50 flex justify-between items-center bg-slate-50/50">
                     <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Notificações</h3>
                     <button 
-                      onClick={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
+                      onClick={() => {
+                        setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+                        setSwBadgeCount(0);
+                        clearAppBadge();
+                      }}
                       className="text-[10px] font-bold text-primary uppercase hover:underline"
                     >
                       Limpar tudo
@@ -6281,6 +6430,54 @@ export default function App() {
             </section>
           )}
 
+          {/* Notificações */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+              <Bell size={16} className="text-primary" /> Notificações
+            </h4>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <p className="text-sm font-bold text-slate-700">Permitir Notificações</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                    Receba alertas de novos pedidos instantaneamente
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {notificationPermission === 'granted' ? (
+                    <div className="flex items-center gap-2 text-green-600">
+                      <CheckCircle2 size={20} />
+                      <span className="text-xs font-black uppercase tracking-widest">Ativado</span>
+                    </div>
+                  ) : notificationPermission === 'denied' ? (
+                    <div className="flex items-center gap-2 text-red-500">
+                      <XCircle size={20} />
+                      <span className="text-xs font-black uppercase tracking-widest">Bloqueado</span>
+                    </div>
+                  ) : (
+                    <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Padrão</span>
+                  )}
+                </div>
+              </div>
+              {notificationPermission !== 'granted' && (
+                <button 
+                  onClick={requestNotificationPermission}
+                  className="w-full py-4 bg-primary text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  <Bell size={16} /> Ativar Notificações
+                </button>
+              )}
+              {notificationPermission === 'granted' && (
+                <button 
+                  onClick={() => sendLocalNotification('Teste de Notificação', 'Funciona! Você receberá alertas de novos pedidos.')}
+                  className="w-full py-4 bg-slate-100 text-slate-700 rounded-2xl text-xs font-black uppercase tracking-widest active:scale-95 transition-all flex items-center justify-center gap-2"
+                >
+                  <Bell size={16} /> Testar Notificação
+                </button>
+              )}
+            </div>
+          </section>
+
           {/* Perfil do Usuário (Etapa 3) */}
           <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200">
             <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest mb-6 flex items-center gap-2">
@@ -6649,6 +6846,22 @@ export default function App() {
             </div>
           </section>
 
+          {/* Integração WhatsApp */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+              <MessageSquare size={16} className="text-primary" /> Integração WhatsApp
+            </h4>
+            <p className="text-sm font-bold text-slate-500">
+              Envie notificações automáticas de pedidos via WhatsApp para você e seus clientes!
+            </p>
+            <button 
+              onClick={() => navigate('whatsapp-config')}
+              className="w-full h-14 bg-primary text-white rounded-2xl font-black flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-[0.98] transition-all"
+            >
+              <Settings size={20} /> Configurar WhatsApp
+            </button>
+          </section>
+
           {/* Gerenciamento de Backups (Etapa 2) */}
           <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
             <div className="flex items-center justify-between">
@@ -6870,6 +7083,315 @@ export default function App() {
     );
   };
 
+  const WhatsAppConfigPage = () => {
+    const [whatsappConfig, setWhatsappConfig] = useState<WhatsAppConfig | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const [isTesting, setIsTesting] = useState(false);
+    const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+    const [localConfig, setLocalConfig] = useState<WhatsAppConfig>({
+      service_provider: 'evolution',
+      enable_owner_notifications: true,
+      enable_customer_notifications: true,
+      customer_notification_delay_minutes: 5,
+    });
+
+    useEffect(() => {
+      loadConfig();
+    }, []);
+
+    const loadConfig = async () => {
+      try {
+        const config = await supabaseService.getWhatsAppConfig();
+        if (config) {
+          setWhatsappConfig(config);
+          setLocalConfig({
+            ...config,
+            service_provider: 'evolution',
+          });
+        }
+      } catch (error) {
+        console.error('Erro ao carregar configurações:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    const handleSave = async () => {
+      setIsSaving(true);
+      try {
+        const saved = await supabaseService.upsertWhatsAppConfig({
+          ...localConfig,
+          service_provider: 'evolution',
+        });
+        setWhatsappConfig(saved);
+        alert('Configurações salvas com sucesso!');
+      } catch (error: any) {
+        alert('Erro ao salvar: ' + (error.message || 'Erro desconhecido'));
+      } finally {
+        setIsSaving(false);
+      }
+    };
+
+    const handleTest = async () => {
+      if (!localConfig.owner_whatsapp_number) {
+        alert('Informe o seu número de WhatsApp primeiro!');
+        return;
+      }
+      setIsTesting(true);
+      setTestResult(null);
+      try {
+        const supabase = getSupabase();
+        const { error } = await supabase.functions.invoke('send-whatsapp-message', {
+          body: {
+            test: true,
+            testNumber: localConfig.owner_whatsapp_number
+          }
+        });
+        if (error) throw error;
+        setTestResult({ success: true, message: 'Mensagem de teste enviada com sucesso!' });
+      } catch (error: any) {
+        setTestResult({ success: false, message: 'Erro: ' + (error.message || 'Falha ao enviar') });
+      } finally {
+        setIsTesting(false);
+      }
+    };
+
+    if (isLoading) {
+      return (
+        <div className="min-h-screen bg-background-light flex items-center justify-center">
+          <div className="animate-spin size-8 border-4 border-primary border-t-transparent rounded-full" />
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-background-light pb-32">
+        <Header title="WhatsApp" showBack onBack={() => navigate('settings')} />
+        <main className="p-4 space-y-4 max-w-4xl mx-auto">
+          {/* Provedor */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <MessageSquare size={16} className="text-primary" /> Provedor de Serviço
+            </h4>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Evolution API URL</label>
+                <input
+                  className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold"
+                  placeholder="Ex: https://SEU-SERVIDOR:8080"
+                  value={localConfig.api_url || ''}
+                  onChange={(e) => setLocalConfig({ ...localConfig, api_url: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">API Key (apikey)</label>
+                <input
+                  type="password"
+                  className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold"
+                  placeholder="Cole sua apikey"
+                  value={localConfig.api_key || ''}
+                  onChange={(e) => setLocalConfig({ ...localConfig, api_key: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Instance ID</label>
+                <input
+                  className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold"
+                  placeholder="Ex: minha-instancia"
+                  value={localConfig.instance_id || ''}
+                  onChange={(e) => setLocalConfig({ ...localConfig, instance_id: e.target.value })}
+                />
+              </div>
+            </div>
+          </section>
+
+          {/* Número do Dono */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <Phone size={16} className="text-primary" /> Seu WhatsApp
+            </h4>
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-500 uppercase ml-1">Número do WhatsApp</label>
+              <input 
+                className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold"
+                placeholder="(11) 99999-9999"
+                value={localConfig.owner_whatsapp_number || ''}
+                onChange={(e) => setLocalConfig({ ...localConfig, owner_whatsapp_number: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <p className="text-sm font-bold text-slate-700">Notificações para você</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                  Receba alertas de novos pedidos
+                </p>
+              </div>
+              <button 
+                onClick={() => setLocalConfig({ ...localConfig, enable_owner_notifications: !localConfig.enable_owner_notifications })}
+                className={`w-12 h-6 rounded-full transition-all relative ${localConfig.enable_owner_notifications ? 'bg-primary' : 'bg-slate-200'}`}
+              >
+                <div className={`absolute top-1 size-4 bg-white rounded-full transition-all ${localConfig.enable_owner_notifications ? 'left-7' : 'left-1'}`} />
+              </button>
+            </div>
+          </section>
+
+          {/* Notificações para Clientes */}
+          <section className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 space-y-4">
+            <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+              <Users size={16} className="text-primary" /> Notificações para Clientes
+            </h4>
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <p className="text-sm font-bold text-slate-700">Enviar confirmação para clientes</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                  Envie comprovante automático após o pedido
+                </p>
+              </div>
+              <button 
+                onClick={() => setLocalConfig({ ...localConfig, enable_customer_notifications: !localConfig.enable_customer_notifications })}
+                className={`w-12 h-6 rounded-full transition-all relative ${localConfig.enable_customer_notifications ? 'bg-primary' : 'bg-slate-200'}`}
+              >
+                <div className={`absolute top-1 size-4 bg-white rounded-full transition-all ${localConfig.enable_customer_notifications ? 'left-7' : 'left-1'}`} />
+              </button>
+            </div>
+            {localConfig.enable_customer_notifications && (
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase ml-1">Delay (minutos)</label>
+                <input 
+                  type="number"
+                  className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-slate-50 font-bold"
+                  placeholder="5"
+                  value={localConfig.customer_notification_delay_minutes}
+                  onChange={(e) => setLocalConfig({ ...localConfig, customer_notification_delay_minutes: parseInt(e.target.value) || 5 })}
+                />
+              </div>
+            )}
+          </section>
+
+          {/* Ações */}
+          <section className="space-y-3">
+            <button 
+              onClick={handleSave}
+              disabled={isSaving}
+              className="w-full h-16 bg-primary text-white rounded-2xl font-black flex items-center justify-center gap-2 shadow-lg shadow-primary/20 active:scale-[0.98] disabled:opacity-50 transition-all"
+            >
+              <CheckCircle2 size={20} /> {isSaving ? 'Salvando...' : 'Salvar Configurações'}
+            </button>
+            <button 
+              onClick={handleTest}
+              disabled={isTesting}
+              className="w-full h-16 bg-green-500 text-white rounded-2xl font-black flex items-center justify-center gap-2 shadow-lg shadow-green-500/20 active:scale-[0.98] disabled:opacity-50 transition-all"
+            >
+              <Send size={20} /> {isTesting ? 'Enviando...' : 'Testar Configuração'}
+            </button>
+            {testResult && (
+              <div className={`p-4 rounded-2xl text-center ${testResult.success ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>
+                <p className="font-black text-sm">{testResult.message}</p>
+              </div>
+            )}
+            <button 
+              onClick={() => navigate('whatsapp-logs')}
+              className="w-full h-16 bg-slate-900 text-white rounded-2xl font-black flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-all"
+            >
+              <History size={20} /> Ver Histórico de Mensagens
+            </button>
+          </section>
+        </main>
+        <BottomNav />
+      </div>
+    );
+  };
+
+  const WhatsAppLogsPage = () => {
+    const [logs, setLogs] = useState<WhatsAppMessageLog[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+      loadLogs();
+    }, []);
+
+    const loadLogs = async () => {
+      try {
+        const data = await supabaseService.getWhatsAppMessageLogs();
+        setLogs(data);
+      } catch (error) {
+        console.error('Erro ao carregar logs:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    const getStatusColor = (status: string) => {
+      switch (status) {
+        case 'sent': return 'bg-green-50 text-green-600 border-green-200';
+        case 'delivered': return 'bg-blue-50 text-blue-600 border-blue-200';
+        case 'failed': return 'bg-red-50 text-red-600 border-red-200';
+        default: return 'bg-slate-50 text-slate-600 border-slate-200';
+      }
+    };
+
+    const getStatusText = (status: string) => {
+      switch (status) {
+        case 'sent': return 'Enviada';
+        case 'delivered': return 'Entregue';
+        case 'failed': return 'Falha';
+        default: return 'Pendente';
+      }
+    };
+
+    return (
+      <div className="min-h-screen bg-background-light pb-32">
+        <Header title="Histórico WhatsApp" showBack onBack={() => navigate('whatsapp-config')} />
+        <main className="p-4 space-y-4 max-w-4xl mx-auto">
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 gap-4">
+              <div className="animate-spin size-8 border-4 border-primary border-t-transparent rounded-full" />
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Carregando...</p>
+            </div>
+          ) : logs.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-3xl border border-dashed border-slate-200">
+              <MessageSquare size={40} className="mx-auto text-slate-200 mb-3" />
+              <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Nenhuma mensagem enviada</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {logs.map((log) => (
+                <div key={log.id} className="bg-white p-5 rounded-3xl shadow-sm border border-slate-200">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase border ${getStatusColor(log.status)}`}>
+                          {getStatusText(log.status)}
+                        </span>
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase border ${log.recipient_type === 'test' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                          {log.recipient_type === 'owner' ? 'Dono' : log.recipient_type === 'customer' ? 'Cliente' : 'Teste'}
+                        </span>
+                      </div>
+                      <p className="font-black text-slate-900">{log.recipient_number}</p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase mt-1">
+                        {new Date(log.created_at!).toLocaleDateString('pt-BR')} às {new Date(log.created_at!).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                      {log.error_message && (
+                        <p className="text-xs text-red-500 mt-2 font-bold">Erro: {log.error_message}</p>
+                      )}
+                    </div>
+                    {log.order_id && (
+                      <span className="text-xs font-black text-slate-400 uppercase">
+                        Pedido #{log.order_id.slice(0, 8)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </main>
+        <BottomNav />
+      </div>
+    );
+  };
+
   const renderPage = () => {
     if (!isConfigured) {
       return (
@@ -6911,6 +7433,8 @@ export default function App() {
       case 'cart': return <CartPage />;
       case 'checkout': return <CheckoutPage />;
       case 'settings': return <SettingsPage />;
+      case 'whatsapp-config': return <WhatsAppConfigPage />;
+      case 'whatsapp-logs': return <WhatsAppLogsPage />;
       default: return <DashboardPage />;
     }
   };

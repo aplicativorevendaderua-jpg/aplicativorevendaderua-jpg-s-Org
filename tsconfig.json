@@ -7,7 +7,9 @@
     "lib": [
       "ES2022",
       "DOM",
-      "DOM.Iterable"
+      "DOM.Iterable",
+      "WebWorker",
+      "WebWorker.Iterable"
     ],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
@@ -23,5 +25,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": ["vite/client", "vite-plugin-pwa/client"]
-  }
+  },
+  "exclude": ["supabase/functions"]
 }

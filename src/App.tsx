@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useDeferredValue } from 'react';
 import { 
   LayoutDashboard, 
   Package, 
@@ -78,6 +78,15 @@ import { clearAppBadge, ensurePushSubscription, listenToServiceWorkerMessages, r
 function generateBoletoLine(amount: number) {
   const valueStr = Math.floor(amount * 100).toString().padStart(10, '0');
   return `34191.09008 63396.832742 71325.430006 1 ${valueStr}`;
+}
+
+function normalizeForSearch(value: any) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function generatePixPayload(pixKey: string, amount: number, merchantName: string = 'LOJA', merchantCity: string = 'CIDADE', txId: string = '***') {
@@ -261,7 +270,6 @@ export default function App() {
   const [publicCatalogSlug, setPublicCatalogSlug] = useState<string | null>(null);
   const [publicCatalogInfo, setPublicCatalogInfo] = useState<{ store_name: string; store_logo: string | null; theme_color: string | null; store_phone?: string | null; store_address?: string | null; tax_id?: string | null; instagram?: string | null; facebook?: string | null; tiktok?: string | null; pix_key?: string | null } | null>(null);
   const [publicCatalogProducts, setPublicCatalogProducts] = useState<Array<{ id: string; name: string; category: string; sale_price: number; image: string; description: string; available: boolean; stock: number }>>([]);
-  const [publicCatalogSearch, setPublicCatalogSearch] = useState('');
   const [publicCatalogIsLoading, setPublicCatalogIsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -1081,6 +1089,7 @@ export default function App() {
   const PublicCatalogPage = () => {
     const [publicCart, setPublicCart] = useState<Array<{ productId: string; variationId?: string; quantity: number }>>([]);
     const [checkoutOpen, setCheckoutOpen] = useState(false);
+    const [publicCatalogSearch, setPublicCatalogSearch] = useState('');
     const [customerName, setCustomerName] = useState('');
     const [customerPhone, setCustomerPhone] = useState('');
     const [customerWhatsApp, setCustomerWhatsApp] = useState('');
@@ -1213,6 +1222,18 @@ export default function App() {
       return ['Todas', ...Array.from(cats)].sort();
     }, [publicCatalogProducts]);
 
+    const deferredPublicSearch = useDeferredValue(publicCatalogSearch);
+
+    const publicCatalogIndexed = useMemo(() => {
+      return publicCatalogProducts.map((p: any) => {
+        const nameNorm = normalizeForSearch(p.name);
+        const catNorm = normalizeForSearch(p.category);
+        const descNorm = normalizeForSearch(p.description);
+        const hay = `${nameNorm} ${catNorm} ${descNorm}`.trim();
+        return { p, nameNorm, catNorm, descNorm, hay };
+      });
+    }, [publicCatalogProducts]);
+
     const addToPublicCart = (product: any, variationId?: string) => {
       if (!variationId && product.variations && product.variations.length > 0) {
         setSelectedProductForVar(product);
@@ -1299,13 +1320,41 @@ export default function App() {
     };
 
     const filtered = useMemo(() => {
-      const q = publicCatalogSearch.toLowerCase();
-      return publicCatalogProducts.filter(p => {
-        const matchesSearch = (p.name?.toLowerCase() || '').includes(q) || (p.category?.toLowerCase() || '').includes(q);
-        const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
-        return matchesSearch && matchesCategory;
-      });
-    }, [publicCatalogProducts, publicCatalogSearch, selectedCategory]);
+      const q = normalizeForSearch(deferredPublicSearch);
+      const tokens = q ? q.split(' ').filter(Boolean) : [];
+      const matchesCategory = (category: string) => selectedCategory === 'Todas' || category === selectedCategory;
+
+      if (tokens.length === 0) {
+        return publicCatalogProducts.filter(p => matchesCategory(p.category));
+      }
+
+      const scored: Array<{ p: any; score: number }> = [];
+      for (const row of publicCatalogIndexed) {
+        if (!matchesCategory(row.p.category)) continue;
+        let ok = true;
+        for (const t of tokens) {
+          if (!row.hay.includes(t)) { ok = false; break; }
+        }
+        if (!ok) continue;
+
+        let score = 0;
+        if (row.nameNorm === q) score += 400;
+        if (row.nameNorm.startsWith(q)) score += 220;
+        if (row.catNorm === q) score += 160;
+        for (const t of tokens) {
+          if (row.nameNorm.startsWith(t)) score += 60;
+          else if (row.nameNorm.includes(t)) score += 40;
+          if (row.catNorm.includes(t)) score += 16;
+          if (row.descNorm.includes(t)) score += 8;
+        }
+        if (row.p.available) score += 6;
+        if ((row.p.stock ?? 0) > 0) score += 6;
+        scored.push({ p: row.p, score });
+      }
+
+      scored.sort((a, b) => b.score - a.score || String(a.p.name || '').localeCompare(String(b.p.name || ''), 'pt-BR', { sensitivity: 'base' }));
+      return scored.map(s => s.p);
+    }, [publicCatalogProducts, deferredPublicSearch, selectedCategory, publicCatalogIndexed]);
 
     return (
       <div className={`min-h-screen bg-background-light transition-all duration-300 ${cartCount > 0 ? 'pb-36' : 'pb-10'}`}>
@@ -2137,67 +2186,200 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen flex flex-col justify-center px-6 py-12 bg-white relative z-[60] pointer-events-auto">
-      <header className="mb-10 text-left flex flex-col">
-        <img src="/logo.png" alt="FLUX" className="h-16 w-auto object-contain object-left mb-6" onError={(e) => {
-          (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
-        }} />
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">Entrar</h1>
-        <p className="text-slate-500 text-base leading-relaxed">
-          Acesse sua conta no FLUX para gerenciar vendas e produtos.
-        </p>
-      </header>
-      <div className="space-y-5">
-        <div className="space-y-1.5">
-          <label className="text-sm font-semibold text-slate-700 ml-1">E-mail</label>
-          <input 
-            type="email" 
-            placeholder="seu@email.com"
-            className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-sm font-semibold text-slate-700 ml-1">Senha</label>
-          <div className="relative">
-            <input 
-              type={showPassword ? 'text' : 'password'}
-              placeholder="••••••••"
-              className="w-full h-14 px-4 bg-white border border-slate-200 rounded-twelve focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword(prev => !prev)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"
-            >
-              {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-            </button>
+      <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-primary/10 px-4 sm:px-6 py-8 sm:py-12 flex items-start sm:items-center justify-center z-[60] pointer-events-auto overflow-y-auto">
+        <div
+          className="absolute inset-0 opacity-60 pointer-events-none"
+          style={{
+            backgroundImage: 'radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 40%), radial-gradient(circle at 80% 30%, rgba(99,102,241,0.12), transparent 45%), radial-gradient(circle at 55% 85%, rgba(14,165,233,0.10), transparent 45%)'
+          }}
+        />
+
+        <motion.div
+          className="absolute -top-28 -left-28 size-[420px] rounded-full bg-primary/15 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, 30, 0], y: [0, 18, 0], scale: [1, 1.06, 1] }}
+          transition={reduceMotion ? undefined : { duration: 10, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute -bottom-40 -right-40 size-[520px] rounded-full bg-indigo-200/40 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, -28, 0], y: [0, -20, 0], scale: [1, 1.05, 1] }}
+          transition={reduceMotion ? undefined : { duration: 12, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute top-1/3 -right-24 size-[320px] rounded-full bg-sky-200/40 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, -18, 0], y: [0, 24, 0], opacity: [0.55, 0.75, 0.55] }}
+          transition={reduceMotion ? undefined : { duration: 9, repeat: Infinity, ease: 'easeInOut' }}
+        />
+
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 18, scale: 0.985 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+          transition={reduceMotion ? undefined : { duration: 0.28, ease: 'easeOut' }}
+          className="w-full max-w-5xl relative"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 items-stretch">
+            <div className="relative rounded-[40px] bg-white/85 backdrop-blur-xl border border-slate-200 shadow-2xl shadow-slate-900/10 overflow-hidden order-1 md:order-2">
+              <div className="h-1.5 bg-gradient-to-r from-primary via-indigo-500 to-sky-400" />
+              <div className="p-6 sm:p-10">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Acesso</p>
+                    <h1 className="text-2xl font-black tracking-tight text-slate-900 mt-1">Entrar</h1>
+                  </div>
+                  <div className="size-11 rounded-3xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-700">
+                    <Store size={18} />
+                  </div>
+                </div>
+
+                <div className="mt-7 space-y-5">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">E-mail</label>
+                    <input
+                      type="email"
+                      placeholder="seu@email.com"
+                      className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">Senha</label>
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="••••••••"
+                        className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] focus:ring-2 focus:ring-primary outline-none transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm pr-12"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(prev => !prev)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      onClick={() => navigate('recover-password')}
+                      className="text-xs font-black uppercase tracking-widest text-primary hover:text-blue-700 transition-colors"
+                    >
+                      Esqueci minha senha
+                    </button>
+                    <button
+                      onClick={() => navigate('register')}
+                      className="text-xs font-black uppercase tracking-widest text-slate-600 hover:text-slate-900 transition-colors"
+                    >
+                      Criar conta
+                    </button>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={handleLogin}
+                      disabled={isAuthLoading}
+                      className="w-full h-14 bg-slate-900 text-white font-black text-sm rounded-[18px] shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-all disabled:opacity-50 uppercase tracking-widest"
+                    >
+                      {isAuthLoading ? 'Entrando...' : 'Entrar'}
+                    </button>
+                  </div>
+
+                  <div className="hidden sm:block p-4 rounded-[28px] bg-slate-50 border border-slate-200">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Dica</p>
+                    <p className="text-xs font-black text-slate-700 mt-2 leading-relaxed">
+                      Use importação em massa para cadastrar muitos produtos e organize suas categorias para manter o catálogo sempre limpo.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative overflow-hidden rounded-[40px] bg-white/60 backdrop-blur-xl border border-slate-200 shadow-2xl shadow-slate-900/10 p-6 sm:p-10 flex flex-col order-2 md:order-1">
+              <div className="absolute inset-0 opacity-70 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 15% 25%, rgba(59,130,246,0.16), transparent 42%), radial-gradient(circle at 80% 55%, rgba(99,102,241,0.12), transparent 45%), radial-gradient(circle at 55% 85%, rgba(14,165,233,0.10), transparent 45%)' }} />
+              <motion.div
+                className="absolute -top-24 -left-24 size-[360px] rounded-full bg-primary/15 blur-3xl pointer-events-none"
+                animate={reduceMotion ? undefined : { x: [0, 18, 0], y: [0, 14, 0], scale: [1, 1.05, 1] }}
+                transition={reduceMotion ? undefined : { duration: 10, repeat: Infinity, ease: 'easeInOut' }}
+              />
+              <motion.div
+                className="absolute -bottom-28 -right-28 size-[420px] rounded-full bg-indigo-200/40 blur-3xl pointer-events-none"
+                animate={reduceMotion ? undefined : { x: [0, -16, 0], y: [0, -12, 0], scale: [1, 1.04, 1] }}
+                transition={reduceMotion ? undefined : { duration: 12, repeat: Infinity, ease: 'easeInOut' }}
+              />
+
+              <div className="relative">
+                <div className="flex items-center justify-center md:justify-start">
+                  <motion.div
+                    initial={reduceMotion ? false : { opacity: 0, y: 10, scale: 0.98 }}
+                    animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+                    transition={reduceMotion ? undefined : { duration: 0.32, ease: 'easeOut' }}
+                    className="relative"
+                  >
+                    <div className="absolute -inset-10 rounded-[56px] bg-gradient-to-br from-primary/20 via-indigo-200/10 to-sky-200/10 blur-2xl pointer-events-none" />
+                    <div className="relative p-6 sm:p-7 rounded-[40px] bg-white/80 border border-slate-200 shadow-xl shadow-slate-900/10">
+                      <img
+                        src="/logo.png"
+                        alt="FLUX"
+                        className="h-16 sm:h-20 w-auto object-contain mx-auto md:mx-0"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+                        }}
+                      />
+                    </div>
+                  </motion.div>
+                </div>
+
+                <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900 mt-7 text-center md:text-left">
+                  Seu sistema de vendas e catálogo
+                </h2>
+                <p className="text-slate-600 text-sm leading-relaxed mt-3 text-center md:text-left max-w-xl mx-auto md:mx-0">
+                  Organize produtos com fotos e variações, controle estoque e compartilhe um link do catálogo para receber pedidos com mais rapidez.
+                </p>
+
+                <div className="mt-6 -mx-1 px-1 flex gap-2 overflow-x-auto no-scrollbar sm:mx-0 sm:px-0 sm:grid sm:grid-cols-3 sm:gap-2 sm:overflow-visible">
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center border border-primary/10">
+                        <Package2 size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Produtos</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Cadastro, categorias, fotos e variações</p>
+                  </div>
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-slate-900/10 text-slate-900 flex items-center justify-center border border-slate-900/10">
+                        <ShoppingCart size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Vendas</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Pedidos, clientes e histórico</p>
+                  </div>
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-indigo-500/10 text-indigo-700 flex items-center justify-center border border-indigo-500/10">
+                        <Globe size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Catálogo</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Link online para receber pedidos</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-slate-200/70 flex flex-col sm:flex-row items-center justify-between gap-3 relative">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <Shield size={14} /> Sessão segura
+                </div>
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <Zap size={14} /> Fluxo rápido
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="text-right">
-          <button onClick={() => navigate('recover-password')} className="text-sm font-medium text-primary hover:text-blue-700">
-            Esqueci minha senha
-          </button>
-        </div>
-        <div className="pt-4">
-          <button 
-            onClick={handleLogin}
-            disabled={isAuthLoading}
-            className="w-full h-14 bg-primary text-white font-bold text-lg rounded-twelve shadow-lg shadow-blue-500/30 active:scale-[0.98] transition-all disabled:opacity-50"
-          >
-            {isAuthLoading ? 'Entrando...' : 'Entrar'}
-          </button>
-        </div>
-      </div>
-      <footer className="mt-12 text-center">
-        <p className="text-slate-500 font-medium">
-          Não tem uma conta? 
-          <button onClick={() => navigate('register')} className="text-primary font-bold hover:underline ml-1">Criar conta</button>
-        </p>
-      </footer>
+        </motion.div>
       </div>
     );
   };
@@ -2247,123 +2429,347 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-background-light relative z-[60] pointer-events-auto">
-      <div className="flex items-center p-4 pb-2 justify-between">
-        <button onClick={() => navigate('login')} className="size-12 flex items-center justify-center hover:bg-slate-200/50 rounded-full">
-          <ArrowLeft size={24} />
-        </button>
-        <h2 className="text-lg font-bold flex-1 text-center pr-12">Criar conta</h2>
-      </div>
-      <div className="px-4 pt-6 pb-2">
-        <h3 className="text-3xl font-bold">Criar conta</h3>
-        <p className="text-slate-600 mt-2">Preencha os dados abaixo para começar a vender.</p>
-      </div>
-      <div className="flex flex-col gap-5 px-4 py-6">
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold px-1">Nome completo</label>
-          <input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
-            placeholder="Seu nome completo"
-          />
-        </div>
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold px-1">E-mail</label>
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
-            placeholder="exemplo@empresa.com.br"
-          />
-        </div>
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold px-1">Senha</label>
-          <div className="relative">
-            <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
-              type={showPassword ? 'text' : 'password'}
-              placeholder="Mínimo 6 caracteres"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword(prev => !prev)}
-              className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400"
-            >
-              {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
-            </button>
+      <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-primary/10 px-4 sm:px-6 py-8 sm:py-12 flex items-start sm:items-center justify-center z-[60] pointer-events-auto overflow-y-auto">
+        <div
+          className="absolute inset-0 opacity-60 pointer-events-none"
+          style={{
+            backgroundImage: 'radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 40%), radial-gradient(circle at 80% 30%, rgba(99,102,241,0.12), transparent 45%), radial-gradient(circle at 55% 85%, rgba(14,165,233,0.10), transparent 45%)'
+          }}
+        />
+
+        <motion.div
+          className="absolute -top-28 -left-28 size-[420px] rounded-full bg-primary/15 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, 30, 0], y: [0, 18, 0], scale: [1, 1.06, 1] }}
+          transition={reduceMotion ? undefined : { duration: 10, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute -bottom-40 -right-40 size-[520px] rounded-full bg-indigo-200/40 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, -28, 0], y: [0, -20, 0], scale: [1, 1.05, 1] }}
+          transition={reduceMotion ? undefined : { duration: 12, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute top-1/3 -right-24 size-[320px] rounded-full bg-sky-200/40 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, -18, 0], y: [0, 24, 0], opacity: [0.55, 0.75, 0.55] }}
+          transition={reduceMotion ? undefined : { duration: 9, repeat: Infinity, ease: 'easeInOut' }}
+        />
+
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 18, scale: 0.985 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+          transition={reduceMotion ? undefined : { duration: 0.28, ease: 'easeOut' }}
+          className="w-full max-w-5xl relative"
+        >
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 items-stretch">
+            <div className="relative rounded-[40px] bg-white/85 backdrop-blur-xl border border-slate-200 shadow-2xl shadow-slate-900/10 overflow-hidden order-1 md:order-2">
+              <div className="h-1.5 bg-gradient-to-r from-primary via-indigo-500 to-sky-400" />
+              <div className="p-6 sm:p-10">
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    onClick={() => navigate('login')}
+                    className="size-11 rounded-3xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-100 transition-colors"
+                  >
+                    <ArrowLeft size={18} />
+                  </button>
+                  <div className="text-right">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Cadastro</p>
+                    <h1 className="text-2xl font-black tracking-tight text-slate-900 mt-1">Criar conta</h1>
+                  </div>
+                </div>
+
+                <div className="mt-7 space-y-5">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">Nome completo</label>
+                    <input
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] outline-none focus:ring-2 focus:ring-primary transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm"
+                      placeholder="Seu nome completo"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">E-mail</label>
+                    <input
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] outline-none focus:ring-2 focus:ring-primary transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm"
+                      placeholder="exemplo@empresa.com.br"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">Senha</label>
+                    <div className="relative">
+                      <input
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] outline-none focus:ring-2 focus:ring-primary transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm pr-12"
+                        type={showPassword ? 'text' : 'password'}
+                        placeholder="Mínimo 6 caracteres"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(prev => !prev)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">Confirmar senha</label>
+                    <input
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="w-full h-14 px-4 bg-white border border-slate-200 rounded-[18px] outline-none focus:ring-2 focus:ring-primary transition-all shadow-sm relative z-10 pointer-events-auto cursor-text font-bold text-sm"
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="Repita sua senha"
+                    />
+                  </div>
+
+                  <div className="pt-1">
+                    <button
+                      onClick={handleRegister}
+                      disabled={isAuthLoading}
+                      className="w-full h-14 bg-slate-900 text-white font-black text-sm rounded-[18px] shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-all disabled:opacity-50 uppercase tracking-widest"
+                    >
+                      {isAuthLoading ? 'Criando...' : 'Criar conta'}
+                    </button>
+                  </div>
+
+                  <div className="pt-2 text-center">
+                    <p className="text-slate-500 font-bold text-sm">
+                      Já tem uma conta?
+                      <button onClick={() => navigate('login')} className="text-primary font-black hover:underline ml-1">
+                        Entrar
+                      </button>
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative overflow-hidden rounded-[40px] bg-white/60 backdrop-blur-xl border border-slate-200 shadow-2xl shadow-slate-900/10 p-6 sm:p-10 flex flex-col order-2 md:order-1">
+              <div className="absolute inset-0 opacity-70 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 15% 25%, rgba(59,130,246,0.16), transparent 42%), radial-gradient(circle at 80% 55%, rgba(99,102,241,0.12), transparent 45%), radial-gradient(circle at 55% 85%, rgba(14,165,233,0.10), transparent 45%)' }} />
+
+              <motion.div
+                className="absolute -top-24 -left-24 size-[360px] rounded-full bg-primary/15 blur-3xl pointer-events-none"
+                animate={reduceMotion ? undefined : { x: [0, 18, 0], y: [0, 14, 0], scale: [1, 1.05, 1] }}
+                transition={reduceMotion ? undefined : { duration: 10, repeat: Infinity, ease: 'easeInOut' }}
+              />
+              <motion.div
+                className="absolute -bottom-28 -right-28 size-[420px] rounded-full bg-indigo-200/40 blur-3xl pointer-events-none"
+                animate={reduceMotion ? undefined : { x: [0, -16, 0], y: [0, -12, 0], scale: [1, 1.04, 1] }}
+                transition={reduceMotion ? undefined : { duration: 12, repeat: Infinity, ease: 'easeInOut' }}
+              />
+
+              <div className="relative">
+                <div className="flex items-center justify-center md:justify-start">
+                  <motion.div
+                    initial={reduceMotion ? false : { opacity: 0, y: 10, scale: 0.98 }}
+                    animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+                    transition={reduceMotion ? undefined : { duration: 0.32, ease: 'easeOut' }}
+                    className="relative"
+                  >
+                    <div className="absolute -inset-10 rounded-[56px] bg-gradient-to-br from-primary/20 via-indigo-200/10 to-sky-200/10 blur-2xl pointer-events-none" />
+                    <div className="relative p-6 sm:p-7 rounded-[40px] bg-white/80 border border-slate-200 shadow-xl shadow-slate-900/10">
+                      <img
+                        src="/logo.png"
+                        alt="FLUX"
+                        className="h-16 sm:h-20 w-auto object-contain mx-auto md:mx-0"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="%23137fec" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>';
+                        }}
+                      />
+                    </div>
+                  </motion.div>
+                </div>
+
+                <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-slate-900 mt-7 text-center md:text-left">
+                  Comece com uma conta gratuita
+                </h2>
+                <p className="text-slate-600 text-sm leading-relaxed mt-3 text-center md:text-left max-w-xl mx-auto md:mx-0">
+                  Em poucos minutos você cria seu catálogo e já pode cadastrar produtos e receber pedidos.
+                </p>
+
+                <div className="mt-6 -mx-1 px-1 flex gap-2 overflow-x-auto no-scrollbar sm:mx-0 sm:px-0 sm:grid sm:grid-cols-3 sm:gap-2 sm:overflow-visible">
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-primary/10 text-primary flex items-center justify-center border border-primary/10">
+                        <Package2 size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Catálogo</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Link online para clientes comprarem</p>
+                  </div>
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-slate-900/10 text-slate-900 flex items-center justify-center border border-slate-900/10">
+                        <Users size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Clientes</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Organize sua carteira e histórico</p>
+                  </div>
+                  <div className="p-4 rounded-[28px] bg-white/80 border border-slate-200 min-w-[240px] sm:min-w-0">
+                    <div className="flex items-center gap-2">
+                      <div className="size-9 rounded-2xl bg-indigo-500/10 text-indigo-700 flex items-center justify-center border border-indigo-500/10">
+                        <BarChart3 size={18} />
+                      </div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Painel</p>
+                    </div>
+                    <p className="text-xs font-black text-slate-700 mt-2">Acompanhe vendas e resultados</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-slate-200/70 flex flex-col sm:flex-row items-center justify-between gap-3 relative">
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <Shield size={14} /> Sessão segura
+                </div>
+                <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                  <Zap size={14} /> Configuração rápida
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex flex-col gap-2">
-          <label className="text-sm font-semibold px-1">Confirmar senha</label>
-          <input
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white h-14 px-4 outline-none focus:ring-2 focus:ring-primary/20 relative z-10 pointer-events-auto cursor-text"
-            type={showPassword ? 'text' : 'password'}
-            placeholder="Repita sua senha"
-          />
-        </div>
-        <div className="pt-4">
-          <button 
-            onClick={handleRegister}
-            disabled={isAuthLoading}
-            className="w-full bg-primary text-white font-bold h-14 rounded-xl shadow-lg shadow-primary/20 active:scale-[0.98] disabled:opacity-50"
-          >
-            {isAuthLoading ? 'Criando...' : 'Criar conta'}
-          </button>
-        </div>
-        <div className="pt-6 pb-12 flex flex-col items-center gap-4">
-          <p className="text-slate-600 text-sm">
-            Já tem uma conta? 
-            <button onClick={() => navigate('login')} className="text-primary font-bold hover:underline ml-1">Entrar</button>
-          </p>
-        </div>
-      </div>
+        </motion.div>
       </div>
     );
   };
 
-  const RecoverPasswordPage = () => (
-    <div className="min-h-screen bg-[#f9fafb] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white p-8 rounded-xl shadow-xl border border-primary/5">
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-16 h-16 mb-6 bg-primary rounded-twelve text-white">
-            <Lock size={32} />
-          </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-3">Recuperar senha</h1>
-          <p className="text-slate-600 text-sm leading-relaxed px-4">
-            Informe seu e-mail para receber as instruções de recuperação.
-          </p>
-        </div>
-        <div className="space-y-6">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider ml-1">E-mail</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-                <Mail size={18} />
+  const RecoverPasswordPage = () => {
+    const [email, setEmail] = useState('');
+    const [isAuthLoading, setIsAuthLoading] = useState(false);
+    const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+    const handleRecover = async () => {
+      if (!email.trim()) {
+        setStatus({ type: 'error', message: 'Informe seu e-mail.' });
+        return;
+      }
+
+      setIsAuthLoading(true);
+      setStatus(null);
+      try {
+        const supabase = getSupabase();
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+          redirectTo: window.location.origin
+        });
+        if (error) throw error;
+        setStatus({ type: 'success', message: 'Enviamos um link de recuperação para o seu e-mail.' });
+      } catch (error: any) {
+        if (error?.message === 'Failed to fetch') {
+          setStatus({ type: 'error', message: 'Erro de conexão: Não foi possível alcançar o servidor do Supabase.' });
+        } else {
+          setStatus({ type: 'error', message: error?.message || 'Erro ao enviar link de recuperação.' });
+        }
+      } finally {
+        setIsAuthLoading(false);
+      }
+    };
+
+    return (
+      <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-primary/10 px-4 sm:px-6 py-8 sm:py-12 flex items-start sm:items-center justify-center z-[60] pointer-events-auto overflow-y-auto">
+        <div
+          className="absolute inset-0 opacity-60 pointer-events-none"
+          style={{
+            backgroundImage: 'radial-gradient(circle at 20% 20%, rgba(59,130,246,0.16), transparent 40%), radial-gradient(circle at 80% 30%, rgba(99,102,241,0.12), transparent 45%), radial-gradient(circle at 55% 85%, rgba(14,165,233,0.10), transparent 45%)'
+          }}
+        />
+
+        <motion.div
+          className="absolute -top-28 -left-28 size-[420px] rounded-full bg-primary/15 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, 30, 0], y: [0, 18, 0], scale: [1, 1.06, 1] }}
+          transition={reduceMotion ? undefined : { duration: 10, repeat: Infinity, ease: 'easeInOut' }}
+        />
+        <motion.div
+          className="absolute -bottom-40 -right-40 size-[520px] rounded-full bg-indigo-200/40 blur-3xl pointer-events-none"
+          animate={reduceMotion ? undefined : { x: [0, -28, 0], y: [0, -20, 0], scale: [1, 1.05, 1] }}
+          transition={reduceMotion ? undefined : { duration: 12, repeat: Infinity, ease: 'easeInOut' }}
+        />
+
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 18, scale: 0.985 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0, scale: 1 }}
+          transition={reduceMotion ? undefined : { duration: 0.28, ease: 'easeOut' }}
+          className="w-full max-w-md relative"
+        >
+          <div className="relative rounded-[40px] bg-white/85 backdrop-blur-xl border border-slate-200 shadow-2xl shadow-slate-900/10 overflow-hidden">
+            <div className="h-1.5 bg-gradient-to-r from-primary via-indigo-500 to-sky-400" />
+            <div className="p-7 sm:p-10">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  onClick={() => navigate('login')}
+                  className="size-11 rounded-3xl bg-slate-50 border border-slate-200 flex items-center justify-center text-slate-700 hover:bg-slate-100 transition-colors"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+                <div className="size-11 rounded-3xl bg-primary/10 text-primary border border-primary/10 flex items-center justify-center">
+                  <Lock size={18} />
+                </div>
               </div>
-              <input className="block w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-primary/20" placeholder="exemplo@empresa.com.br" />
+
+              <div className="mt-6 text-center">
+                <h1 className="text-2xl font-black tracking-tight text-slate-900">Recuperar senha</h1>
+                <p className="text-slate-600 text-sm leading-relaxed mt-2">
+                  Informe seu e-mail para receber as instruções de recuperação.
+                </p>
+              </div>
+
+              <div className="mt-7 space-y-5">
+                {status && (
+                  <div
+                    className={[
+                      'p-4 rounded-[20px] border font-bold text-sm',
+                      status.type === 'success'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        : 'bg-rose-50 border-rose-200 text-rose-800'
+                    ].join(' ')}
+                  >
+                    {status.message}
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">E-mail</label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                      <Mail size={18} />
+                    </div>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="block w-full h-14 pl-10 pr-4 bg-white border border-slate-200 rounded-[18px] outline-none focus:ring-2 focus:ring-primary transition-all shadow-sm font-bold text-sm relative z-10 pointer-events-auto cursor-text"
+                      placeholder="exemplo@empresa.com.br"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleRecover}
+                  disabled={isAuthLoading}
+                  className="w-full h-14 bg-slate-900 text-white font-black text-sm rounded-[18px] shadow-lg shadow-slate-900/20 active:scale-[0.98] transition-all uppercase tracking-widest disabled:opacity-50"
+                >
+                  {isAuthLoading ? 'Enviando...' : 'Enviar link'}
+                </button>
+
+                <div className="pt-3 text-center">
+                  <button
+                    onClick={() => navigate('login')}
+                    className="inline-flex items-center text-primary font-black uppercase tracking-widest text-[11px] hover:underline"
+                  >
+                    Voltar para o login
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-          <button 
-            onClick={() => navigate('login')}
-            className="w-full h-14 bg-primary text-white font-bold text-lg rounded-twelve shadow-lg shadow-blue-500/30 active:scale-[0.98]"
-          >
-            Enviar link
-          </button>
-        </div>
-        <div className="mt-8 pt-8 border-t border-slate-100 text-center">
-          <button onClick={() => navigate('login')} className="inline-flex items-center text-primary font-medium hover:underline text-sm group">
-            <ArrowLeft size={16} className="mr-1.5 transition-transform group-hover:-translate-x-1" />
-            Voltar para o login
-          </button>
-        </div>
+        </motion.div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const VerifyEmailPage = () => (
     <div className="min-h-screen bg-background-light flex flex-col items-center justify-center p-6">
@@ -7511,14 +7917,50 @@ export default function App() {
       return ['Todas', ...Array.from(cats)].sort();
     }, [products]);
 
-    const filteredProducts = useMemo(() => {
-      const q = productSearchForOrder.toLowerCase();
-      return products.filter((p: Product) => {
-        const matchesSearch = (p.name?.toLowerCase() || '').includes(q) || (p.category?.toLowerCase() || '').includes(q);
-        const matchesCategory = selectedCategory === 'Todas' || p.category === selectedCategory;
-        return matchesSearch && matchesCategory;
+    const deferredOrderSearch = useDeferredValue(productSearchForOrder);
+
+    const internalCatalogIndexed = useMemo(() => {
+      return products.map((p: Product) => {
+        const nameNorm = normalizeForSearch(p.name);
+        const catNorm = normalizeForSearch(p.category);
+        const descNorm = normalizeForSearch((p as any).description);
+        const vars = Array.isArray((p as any).variations) ? (p as any).variations : [];
+        const varsNorm = normalizeForSearch(vars.map((v: any) => `${v.name || ''} ${v.value || ''} ${v.sku || ''}`).join(' '));
+        const hay = `${nameNorm} ${catNorm} ${descNorm} ${varsNorm}`.trim();
+        return { p, nameNorm, catNorm, hay };
       });
-    }, [products, productSearchForOrder, selectedCategory]);
+    }, [products]);
+
+    const filteredProducts = useMemo(() => {
+      const q = normalizeForSearch(deferredOrderSearch);
+      const tokens = q ? q.split(' ').filter(Boolean) : [];
+      const matchesCategory = (category: string) => selectedCategory === 'Todas' || category === selectedCategory;
+
+      if (tokens.length === 0) {
+        return products.filter((p: Product) => matchesCategory(p.category));
+      }
+
+      const scored: Array<{ p: Product; score: number }> = [];
+      for (const row of internalCatalogIndexed) {
+        if (!matchesCategory(row.p.category)) continue;
+        let ok = true;
+        for (const t of tokens) {
+          if (!row.hay.includes(t)) { ok = false; break; }
+        }
+        if (!ok) continue;
+        let score = 0;
+        if (row.nameNorm === q) score += 260;
+        if (row.nameNorm.startsWith(q)) score += 140;
+        for (const t of tokens) {
+          if (row.nameNorm.startsWith(t)) score += 40;
+          else if (row.nameNorm.includes(t)) score += 26;
+          if (row.catNorm.includes(t)) score += 10;
+        }
+        scored.push({ p: row.p, score });
+      }
+      scored.sort((a, b) => b.score - a.score || String(a.p.name || '').localeCompare(String(b.p.name || ''), 'pt-BR', { sensitivity: 'base' }));
+      return scored.map(s => s.p);
+    }, [products, deferredOrderSearch, selectedCategory, internalCatalogIndexed]);
 
     return (
       <div className={`min-h-screen bg-background-light transition-all duration-300 ${cartItemsCount > 0 ? 'pb-48' : 'pb-24'}`}>

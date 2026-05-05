@@ -159,6 +159,66 @@ export default function App() {
     }
   });
   const [currentPage, setCurrentPage] = useState<Page>('login');
+  const currentPageRef = useRef<Page>('login');
+  useEffect(() => {
+    currentPageRef.current = currentPage;
+  }, [currentPage]);
+
+  const lastPageKey = 'revendaderua:last_page_v1';
+  const persistablePagesSet = useMemo(() => {
+    return new Set<Page>([
+      'dashboard',
+      'catalog',
+      'products',
+      'products-bulk-edit',
+      'product-form',
+      'clients',
+      'client-form',
+      'orders',
+      'order-form',
+      'cart',
+      'checkout',
+      'finance',
+      'settings',
+      'profile',
+      'promotions',
+      'whatsapp-config',
+      'whatsapp-logs'
+    ]);
+  }, []);
+
+  const readLastPage = (): Page | null => {
+    try {
+      const raw = localStorage.getItem(lastPageKey);
+      if (!raw) return null;
+      if (persistablePagesSet.has(raw as Page)) return raw as Page;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeLastPage = (page: Page) => {
+    try {
+      if (!persistablePagesSet.has(page)) return;
+      localStorage.setItem(lastPageKey, page);
+    } catch {}
+  };
+
+  const clearLastPage = () => {
+    try {
+      localStorage.removeItem(lastPageKey);
+    } catch {}
+  };
+
+  useEffect(() => {
+    writeLastPage(currentPage);
+  }, [currentPage, persistablePagesSet]);
+
+  const getPostAuthLandingPage = (): Page => {
+    const stored = readLastPage();
+    return stored ?? 'dashboard';
+  };
   const [products, setProducts] = useState<Product[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -641,7 +701,7 @@ export default function App() {
         }
         if (!isPublicRoute) {
           fetchData();
-          setCurrentPage('dashboard');
+          setCurrentPage(getPostAuthLandingPage());
         } else {
           setIsLoading(false);
         }
@@ -650,8 +710,14 @@ export default function App() {
 
       if (session) {
         if (!isPublicRoute) {
-          fetchData();
-          setCurrentPage('dashboard');
+          if (event === 'SIGNED_IN') {
+            fetchData();
+            setCurrentPage(getPostAuthLandingPage());
+            return;
+          }
+          if (currentPageRef.current === 'login' || currentPageRef.current === 'register' || currentPageRef.current === 'recover-password' || currentPageRef.current === 'verify-email') {
+            setCurrentPage(getPostAuthLandingPage());
+          }
         }
       } else {
         setProducts([]);
@@ -659,6 +725,7 @@ export default function App() {
         setOrders([]);
         setCategories([]);
         setBackups([]);
+        clearLastPage();
         if (!isPublicRoute) setCurrentPage('login');
       }
     });
@@ -3017,9 +3084,18 @@ export default function App() {
     );
   };
 
-  const ProductsPage = () => {
+  const ProductsPage = ({ mode }: { mode: 'list' | 'bulk-edit' }) => {
+    const productsTabKey = 'revendaderua:products_tab_v1';
     const [search, setSearch] = useState('');
     const [filterCategory, setFilterCategory] = useState('Todas');
+    const [productsTab, setProductsTab] = useState<'products' | 'categories'>(() => {
+      try {
+        const raw = localStorage.getItem(productsTabKey);
+        return raw === 'categories' ? 'categories' : 'products';
+      } catch {
+        return 'products';
+      }
+    });
     const [historyData, setHistoryData] = useState<StockHistory[]>([]);
     const [isHistoryLoading, setIsHistoryLoading] = useState(false);
     const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
@@ -3029,8 +3105,100 @@ export default function App() {
     const [isBulkImporting, setIsBulkImporting] = useState(false);
     const [bulkImportProgress, setBulkImportProgress] = useState<{ total: number; processed: number; added: number; skipped: number; failed: number } | null>(null);
     const [bulkImportMessages, setBulkImportMessages] = useState<string[]>([]);
+    const [isBulkSaving, setIsBulkSaving] = useState(false);
+    const [bulkSaveProgress, setBulkSaveProgress] = useState<{ total: number; done: number; updated: number; failed: number } | null>(null);
+    const [bulkEditGlobal, setBulkEditGlobal] = useState<{
+      category: string;
+      available: 'keep' | 'true' | 'false';
+      salePriceMode: 'keep' | 'set' | 'increase_percent' | 'increase_fixed';
+      salePriceValue: string;
+      stockMode: 'keep' | 'set' | 'add';
+      stockValue: string;
+    }>({
+      category: '',
+      available: 'keep',
+      salePriceMode: 'keep',
+      salePriceValue: '',
+      stockMode: 'keep',
+      stockValue: '',
+    });
+    const [bulkEditIds, setBulkEditIds] = useState<string[]>([]);
+    const [bulkEditSearch, setBulkEditSearch] = useState('');
+    const [bulkEditPage, setBulkEditPage] = useState(1);
+    const [bulkEditPageSize, setBulkEditPageSize] = useState(25);
+    const [bulkEditAutoRemoveOnSave, setBulkEditAutoRemoveOnSave] = useState(true);
+    const [bulkEditImages, setBulkEditImages] = useState<Record<string, File | null>>({});
+    const [bulkSaveErrors, setBulkSaveErrors] = useState<string[]>([]);
+    const [bulkImageAutoMatchStats, setBulkImageAutoMatchStats] = useState<{ matched: number; unmatched: number } | null>(null);
+    const [bulkEditActiveId, setBulkEditActiveId] = useState<string | null>(null);
+    const [bulkEditOriginals, setBulkEditOriginals] = useState<Record<string, {
+      id: string;
+      name: string;
+      category: string;
+      purchase_price: number;
+      sale_price: number;
+      stock: number;
+      description: string;
+      available: boolean;
+      image: string;
+      unidade_medida: string;
+      quantidade_unidade: number;
+      controla_estoque: boolean;
+      limite_por_pedido?: number;
+      variations: Array<{
+        id: string;
+        name: string;
+        value: string;
+        additional_price: number;
+        stock: number;
+        sku?: string;
+      }>;
+    }>>({});
+    const [bulkEditDrafts, setBulkEditDrafts] = useState<Record<string, {
+      id: string;
+      name: string;
+      category: string;
+      purchase_price: string;
+      sale_price: string;
+      stock: string;
+      description: string;
+      available: boolean;
+      image: string;
+      unidade_medida: string;
+      quantidade_unidade: string;
+      qtd_unidades_estoque: string;
+      controla_estoque: boolean;
+      limite_por_pedido: string;
+      variations: Array<{
+        id?: string;
+        name: string;
+        value: string;
+        additional_price: string;
+        stock: string;
+        sku: string;
+      }>;
+    }>>({});
+    const bulkSaveRef = useRef<{ total: number; done: number; updated: number; failed: number } | null>(null);
+
+    const [categorySearch, setCategorySearch] = useState('');
+    const [newCategoryName, setNewCategoryName] = useState('');
+    const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+    const [editingCategoryName, setEditingCategoryName] = useState('');
+    const [isCategorySaving, setIsCategorySaving] = useState(false);
+
+    useEffect(() => {
+      try {
+        localStorage.setItem(productsTabKey, productsTab);
+      } catch {}
+    }, [productsTab]);
 
     const categoriesList = useMemo(() => ['Todas', ...Array.from(new Set(products.map(p => p.category)))].sort(), [products]);
+    const categoriesFiltered = useMemo(() => {
+      const q = categorySearch.trim().toLowerCase();
+      const list = (categories || []).slice().sort((a, b) => (a.name || '').localeCompare((b.name || ''), 'pt-BR', { sensitivity: 'base' }));
+      if (!q) return list;
+      return list.filter(c => (c.name || '').toLowerCase().includes(q));
+    }, [categories, categorySearch]);
 
     const filtered = useMemo(() => {
       const q = search.toLowerCase();
@@ -3040,6 +3208,12 @@ export default function App() {
         return matchesSearch && matchesCategory;
       });
     }, [products, search, filterCategory]);
+
+    const productById = useMemo(() => {
+      const m = new Map<string, Product>();
+      products.forEach(p => m.set(p.id, p));
+      return m;
+    }, [products]);
 
     const toggleSelection = (id: string) => {
       setSelectedProducts(prev => 
@@ -3088,6 +3262,535 @@ export default function App() {
         alert('Erro ao excluir produto.');
       }
     };
+
+    const bulkEditStorageKey = 'revendaderua:bulk_edit_ids_v1';
+
+    const persistBulkEditIds = (ids: string[]) => {
+      try {
+        if (!Array.isArray(ids) || ids.length === 0) {
+          localStorage.removeItem(bulkEditStorageKey);
+          return;
+        }
+        localStorage.setItem(bulkEditStorageKey, JSON.stringify(ids));
+      } catch {}
+    };
+
+    const readPersistedBulkEditIds = (): string[] => {
+      try {
+        const raw = localStorage.getItem(bulkEditStorageKey);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.map((x) => String(x)).filter(Boolean);
+      } catch {
+        return [];
+      }
+    };
+
+    const startBulkEditSession = (ids: string[]) => {
+      const selected = ids.map(id => productById.get(id)).filter(Boolean) as Product[];
+      if (selected.length === 0) return;
+
+      const originals: Record<string, {
+        id: string;
+        name: string;
+        category: string;
+        purchase_price: number;
+        sale_price: number;
+        stock: number;
+        description: string;
+        available: boolean;
+        image: string;
+        unidade_medida: string;
+        quantidade_unidade: number;
+        controla_estoque: boolean;
+        limite_por_pedido?: number;
+        variations: Array<{ id: string; name: string; value: string; additional_price: number; stock: number; sku?: string }>;
+      }> = {};
+
+      const drafts: Record<string, {
+        id: string;
+        name: string;
+        category: string;
+        purchase_price: string;
+        sale_price: string;
+        stock: string;
+        description: string;
+        available: boolean;
+        image: string;
+        unidade_medida: string;
+        quantidade_unidade: string;
+        qtd_unidades_estoque: string;
+        controla_estoque: boolean;
+        limite_por_pedido: string;
+        variations: Array<{ id?: string; name: string; value: string; additional_price: string; stock: string; sku: string }>;
+      }> = {};
+
+      selected.forEach((p) => {
+        const quantidadeUnidade = Math.max(1, Number(p.quantidade_unidade || 1));
+        const stockNum = Math.max(0, Number(p.stock || 0));
+        const vars = Array.isArray(p.variations) ? p.variations : [];
+
+        originals[p.id] = {
+          id: p.id,
+          name: p.name || '',
+          category: p.category || '',
+          purchase_price: Number(p.purchase_price || 0),
+          sale_price: Number(p.sale_price || 0),
+          stock: stockNum,
+          description: p.description || '',
+          available: !!p.available,
+          image: p.image || '',
+          unidade_medida: p.unidade_medida || 'Unidade',
+          quantidade_unidade: quantidadeUnidade,
+          controla_estoque: p.controla_estoque !== false,
+          limite_por_pedido: p.limite_por_pedido ? Number(p.limite_por_pedido) : undefined,
+          variations: vars.map((v) => ({
+            id: v.id,
+            name: v.name || '',
+            value: v.value || '',
+            additional_price: Number(v.additional_price || 0),
+            stock: Number(v.stock || 0),
+            sku: v.sku || ''
+          }))
+        };
+
+        drafts[p.id] = {
+          id: p.id,
+          name: p.name || '',
+          category: p.category || '',
+          purchase_price: String(Number(p.purchase_price || 0)),
+          sale_price: String(Number(p.sale_price || 0)),
+          stock: String(stockNum),
+          description: p.description || '',
+          available: !!p.available,
+          image: p.image || '',
+          unidade_medida: p.unidade_medida || 'Unidade',
+          quantidade_unidade: String(quantidadeUnidade),
+          qtd_unidades_estoque: String(Math.floor(stockNum / quantidadeUnidade)),
+          controla_estoque: p.controla_estoque !== false,
+          limite_por_pedido: p.limite_por_pedido ? String(p.limite_por_pedido) : '',
+          variations: vars.map((v) => ({
+            id: v.id,
+            name: v.name || '',
+            value: v.value || '',
+            additional_price: String(Number(v.additional_price || 0)),
+            stock: String(Number(v.stock || 0)),
+            sku: v.sku || ''
+          }))
+        };
+      });
+
+      const finalIds = selected.map((p) => p.id);
+      setBulkEditOriginals(originals);
+      setBulkEditDrafts(drafts);
+      setBulkEditIds(finalIds);
+      setBulkEditActiveId((prev) => (prev && finalIds.includes(prev) ? prev : (finalIds[0] || null)));
+      setBulkEditSearch('');
+      setBulkEditPage(1);
+      setBulkEditPageSize(25);
+      setBulkEditAutoRemoveOnSave(true);
+      setBulkEditImages({});
+      setBulkSaveErrors([]);
+      setBulkImageAutoMatchStats(null);
+      setBulkEditGlobal({
+        category: '',
+        available: 'keep',
+        salePriceMode: 'keep',
+        salePriceValue: '',
+        stockMode: 'keep',
+        stockValue: '',
+      });
+      setBulkSaveProgress(null);
+
+      persistBulkEditIds(finalIds);
+    };
+
+    const openBulkEdit = () => {
+      if (selectedProducts.length === 0) return;
+      startBulkEditSession(selectedProducts);
+      navigate('products-bulk-edit');
+    };
+
+    useEffect(() => {
+      if (mode !== 'bulk-edit') return;
+      if (bulkEditIds.length > 0) return;
+      if (products.length === 0) return;
+      const stored = readPersistedBulkEditIds();
+      if (stored.length === 0) return;
+      startBulkEditSession(stored);
+    }, [mode, products.length, bulkEditIds.length, productById]);
+
+    const removeFromBulkEdit = (id: string) => {
+      setBulkEditIds(prev => {
+        const next = prev.filter(x => x !== id);
+        persistBulkEditIds(next);
+        setBulkEditActiveId((current) => {
+          if (!current) return next[0] || null;
+          if (current !== id) return current;
+          const idx = prev.indexOf(id);
+          return next[Math.min(Math.max(0, idx), Math.max(0, next.length - 1))] || next[0] || null;
+        });
+        return next;
+      });
+      setBulkEditDrafts(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setBulkEditOriginals(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setBulkEditImages(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setSelectedProducts(prev => prev.filter(x => x !== id));
+    };
+
+    const normalizeKey = (value: string) => {
+      return String(value || '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\.[a-z0-9]+$/i, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)+/g, '');
+    };
+
+    const autoMatchImagesToProducts = (files: File[]) => {
+      const imageById = new Map<string, File>();
+      const byName = new Map<string, File>();
+      files.forEach(f => {
+        imageById.set(f.name, f);
+        byName.set(normalizeKey(f.name), f);
+      });
+
+      let matched = 0;
+      let unmatched = 0;
+      const updates: Record<string, File | null> = {};
+
+      bulkEditIds.forEach((id) => {
+        const d = bulkEditDrafts[id];
+        if (!d) return;
+        const direct = imageById.get(id) || imageById.get(`${id}.jpg`) || imageById.get(`${id}.jpeg`) || imageById.get(`${id}.png`) || null;
+        if (direct) {
+          updates[id] = direct;
+          matched += 1;
+          return;
+        }
+        const key = normalizeKey(d.name);
+        const found = key ? (byName.get(key) || null) : null;
+        if (found) {
+          updates[id] = found;
+          matched += 1;
+        } else {
+          unmatched += 1;
+        }
+      });
+
+      setBulkEditImages(prev => ({ ...prev, ...updates }));
+      setBulkImageAutoMatchStats({ matched, unmatched });
+    };
+
+    const applyGlobalBulkEdits = () => {
+      setBulkEditDrafts(prev => {
+        const next = { ...prev };
+        bulkEditIds.forEach(id => {
+          const d = next[id];
+          if (!d) return;
+
+          if (bulkEditGlobal.category.trim()) {
+            d.category = bulkEditGlobal.category.trim();
+          }
+          if (bulkEditGlobal.available !== 'keep') {
+            d.available = bulkEditGlobal.available === 'true';
+          }
+
+          const saleValue = Number(String(bulkEditGlobal.salePriceValue || '').replace(/\./g, '').replace(',', '.'));
+          if (bulkEditGlobal.salePriceMode !== 'keep' && Number.isFinite(saleValue)) {
+            const base = Number(String(d.sale_price || '').replace(/\./g, '').replace(',', '.'));
+            const safeBase = Number.isFinite(base) ? base : 0;
+            let computed = safeBase;
+            if (bulkEditGlobal.salePriceMode === 'set') computed = saleValue;
+            if (bulkEditGlobal.salePriceMode === 'increase_percent') computed = safeBase * (1 + (saleValue / 100));
+            if (bulkEditGlobal.salePriceMode === 'increase_fixed') computed = safeBase + saleValue;
+            d.sale_price = String(Math.max(0, Math.round(computed * 100) / 100));
+          }
+
+          const stockValue = Number(String(bulkEditGlobal.stockValue || '').replace(/\./g, '').replace(',', '.'));
+          if (bulkEditGlobal.stockMode !== 'keep' && Number.isFinite(stockValue)) {
+            const base = Number(String(d.stock || '').replace(/\./g, '').replace(',', '.'));
+            const safeBase = Number.isFinite(base) ? base : 0;
+            let computed = safeBase;
+            if (bulkEditGlobal.stockMode === 'set') computed = stockValue;
+            if (bulkEditGlobal.stockMode === 'add') computed = safeBase + stockValue;
+            d.stock = String(Math.max(0, Math.floor(computed)));
+          }
+        });
+        return next;
+      });
+    };
+
+    const buildProductUpdateFromDraft = (id: string) => {
+      const original = bulkEditOriginals[id];
+      const draft = bulkEditDrafts[id];
+      if (!original || !draft) return null;
+
+      const parsePt = (value: any, fallback: number) => {
+        const n = Number(String(value ?? '').trim().replace(/\./g, '').replace(',', '.'));
+        return Number.isFinite(n) ? n : fallback;
+      };
+      const normalizedPurchase = Math.max(0, Math.round(parsePt(draft.purchase_price, original.purchase_price) * 100) / 100);
+      const normalizedSale = Math.max(0, Math.round(parsePt(draft.sale_price, original.sale_price) * 100) / 100);
+      const normalizedStock = Math.max(0, Math.floor(parsePt(draft.stock, original.stock)));
+      const normalizedQtdUn = Math.max(1, Math.floor(parsePt(draft.quantidade_unidade, original.quantidade_unidade)));
+
+      const update: Partial<Product> = {};
+      const name = String(draft.name || '').trim();
+      const category = String(draft.category || '').trim();
+      const description = String(draft.description || '');
+      const unidade = String(draft.unidade_medida || '').trim();
+      const limiteRaw = String(draft.limite_por_pedido || '').trim();
+      const limiteParsed = limiteRaw ? Math.max(1, Math.floor(parsePt(limiteRaw, 0))) : undefined;
+      const imageUrl = String(draft.image || '').trim();
+
+      if (name && name !== original.name) update.name = name;
+      if (category && category !== original.category) update.category = category;
+      if (normalizedPurchase !== original.purchase_price) update.purchase_price = normalizedPurchase as any;
+      if (normalizedSale !== original.sale_price) {
+        update.sale_price = normalizedSale as any;
+        (update as any).price = normalizedSale as any;
+      }
+      if (normalizedStock !== original.stock) update.stock = normalizedStock as any;
+      if (description !== original.description) update.description = description as any;
+      if (draft.available !== original.available) update.available = draft.available as any;
+      if (unidade && unidade !== original.unidade_medida) update.unidade_medida = unidade as any;
+      if (normalizedQtdUn !== original.quantidade_unidade) update.quantidade_unidade = normalizedQtdUn as any;
+      if (draft.controla_estoque !== original.controla_estoque) update.controla_estoque = draft.controla_estoque as any;
+      if ((limiteParsed ?? undefined) !== (original.limite_por_pedido ?? undefined)) update.limite_por_pedido = limiteParsed as any;
+      if (imageUrl && imageUrl !== original.image) update.image = imageUrl as any;
+
+      const normalizeVariation = (v: any) => {
+        const nameV = String(v?.name || '').trim();
+        const valueV = String(v?.value || '').trim();
+        const additional = Math.max(0, Math.round(parsePt(v?.additional_price, 0) * 100) / 100);
+        const stockV = Math.max(0, Math.floor(parsePt(v?.stock, 0)));
+        const skuV = String(v?.sku || '').trim();
+        const idV = v?.id ? String(v.id) : undefined;
+        return { id: idV, name: nameV, value: valueV, additional_price: additional, stock: stockV, sku: skuV };
+      };
+
+      const normalizedVariations = (Array.isArray(draft.variations) ? draft.variations : [])
+        .map(normalizeVariation)
+        .filter(v => v.name.length > 0 && v.value.length > 0);
+
+      const originalVariationsComparable = (Array.isArray(original.variations) ? original.variations : []).map(v => ({
+        id: String(v.id),
+        name: String(v.name || '').trim(),
+        value: String(v.value || '').trim(),
+        additional_price: Math.max(0, Math.round(Number(v.additional_price || 0) * 100) / 100),
+        stock: Math.max(0, Math.floor(Number(v.stock || 0))),
+        sku: String(v.sku || '').trim()
+      }));
+
+      const normalizedVariationsComparable = normalizedVariations.map(v => ({
+        id: v.id ? String(v.id) : '',
+        name: v.name,
+        value: v.value,
+        additional_price: v.additional_price,
+        stock: v.stock,
+        sku: v.sku
+      }));
+
+      const variationsChanged = JSON.stringify(normalizedVariationsComparable) !== JSON.stringify(originalVariationsComparable);
+
+      const normalizedDraft = {
+        ...draft,
+        purchase_price: String(normalizedPurchase),
+        sale_price: String(normalizedSale),
+        stock: String(normalizedStock),
+        quantidade_unidade: String(normalizedQtdUn),
+        qtd_unidades_estoque: draft.qtd_unidades_estoque,
+      };
+      if (Object.keys(update).length === 0) return { update: null, original, draft: normalizedDraft, variations: normalizedVariations, variationsChanged };
+      return { update, original, draft: normalizedDraft, variations: normalizedVariations, variationsChanged };
+    };
+
+    const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+    const smartRetry = async <T,>(fn: () => Promise<T>) => {
+      const delays = [0, 350, 900];
+      let lastError: any = null;
+      for (let i = 0; i < delays.length; i++) {
+        if (delays[i] > 0) await sleep(delays[i]);
+        try {
+          return await fn();
+        } catch (e: any) {
+          lastError = e;
+        }
+      }
+      throw lastError;
+    };
+
+    const saveBulkEditItem = async (id: string) => {
+      const built = buildProductUpdateFromDraft(id);
+      if (!built) return { ok: false, updated: false };
+      const { update, draft, variations, variationsChanged } = built;
+      const nameOk = String(draft.name || '').trim().length > 0;
+      const categoryOk = String(draft.category || '').trim().length > 0;
+      if (!nameOk || !categoryOk) return { ok: false, updated: false };
+
+      const imageFile = bulkEditImages[id] || null;
+      const nextUpdate: any = update ? { ...update } : {};
+      if (imageFile) {
+        try {
+          const url = await smartRetry(() => supabaseService.uploadProductImage(imageFile));
+          nextUpdate.image = url;
+        } catch {
+          return { ok: false, updated: false };
+        }
+      }
+
+      try {
+        let didUpdate = false;
+        let updatedImageUrl: string | null = null;
+
+        if (Object.keys(nextUpdate).length > 0) {
+          const updated = await smartRetry(() => supabaseService.updateProduct(id, nextUpdate));
+          updatedImageUrl = String((updated as any).image || (nextUpdate as any).image || '');
+          setProducts(prev => prev.map(p => p.id === id ? { ...p, ...updated } : p));
+          didUpdate = true;
+        }
+
+        let updatedVariations: Array<{ id: string; name: string; value: string; additional_price: number; stock: number; sku?: string }> | null = null;
+        if (variationsChanged) {
+          const vars = await smartRetry(() => supabaseService.upsertProductVariations(id, variations));
+          updatedVariations = vars.map((v: any) => ({
+            id: String(v.id),
+            name: String(v.name || ''),
+            value: String(v.value || ''),
+            additional_price: Number(v.additional_price || 0),
+            stock: Number(v.stock || 0),
+            sku: v.sku || ''
+          }));
+          setProducts(prev => prev.map(p => p.id === id ? { ...p, variations: vars as any } : p));
+          didUpdate = true;
+        }
+
+        setBulkEditOriginals(prev => ({
+          ...prev,
+          [id]: {
+            id,
+            name: (draft.name || '').trim(),
+            category: (draft.category || '').trim(),
+            purchase_price: Number(String(draft.purchase_price || '0').replace(/\./g, '').replace(',', '.')) || 0,
+            sale_price: Number(String(draft.sale_price || '0').replace(/\./g, '').replace(',', '.')) || 0,
+            stock: Number(String(draft.stock || '0').replace(/\./g, '').replace(',', '.')) || 0,
+            description: String(draft.description || ''),
+            available: !!draft.available,
+            image: updatedImageUrl || String((nextUpdate as any).image || draft.image || prev[id]?.image || ''),
+            unidade_medida: String(draft.unidade_medida || 'Unidade'),
+            quantidade_unidade: Math.max(1, Math.floor(Number(String(draft.quantidade_unidade || '1').replace(/\./g, '').replace(',', '.')) || 1)),
+            controla_estoque: !!draft.controla_estoque,
+            limite_por_pedido: String(draft.limite_por_pedido || '').trim() ? Math.max(1, Math.floor(Number(String(draft.limite_por_pedido || '0').replace(/\./g, '').replace(',', '.')) || 0)) : undefined,
+            variations: updatedVariations || (prev[id]?.variations || []),
+          }
+        }));
+
+        if (updatedImageUrl) {
+          setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], image: updatedImageUrl as any } }));
+        }
+        setBulkEditImages(prev => ({ ...prev, [id]: null }));
+        return { ok: true, updated: didUpdate };
+      } catch {
+        return { ok: false, updated: false };
+      }
+    };
+
+    const withConcurrency = async <T,>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) => {
+      let idx = 0;
+      const runners = Array.from({ length: Math.max(1, concurrency) }).map(async () => {
+        while (idx < items.length) {
+          const current = items[idx++];
+          await worker(current);
+        }
+      });
+      await Promise.all(runners);
+    };
+
+    const startBulkSave = async (ids: string[], removeOnSuccess: boolean) => {
+      if (isBulkSaving) return;
+      if (ids.length === 0) return;
+
+      setIsBulkSaving(true);
+      setBulkSaveErrors([]);
+      const p = { total: ids.length, done: 0, updated: 0, failed: 0 };
+      bulkSaveRef.current = p;
+      setBulkSaveProgress({ ...p });
+
+      try {
+        await withConcurrency(ids, 4, async (id) => {
+          const result = await saveBulkEditItem(id);
+          const ref = bulkSaveRef.current;
+          if (!ref) return;
+          if (result.ok && result.updated) ref.updated += 1;
+          if (!result.ok) {
+            ref.failed += 1;
+            const d = bulkEditDrafts[id];
+            const label = d?.name ? `"${d.name}"` : id;
+            setBulkSaveErrors(prev => (prev.length < 50 ? [...prev, `Falha ao salvar ${label}. Verifique os campos e a imagem.`] : prev));
+          }
+          ref.done += 1;
+          setBulkSaveProgress({ ...ref });
+          if (removeOnSuccess && result.ok && result.updated) {
+            removeFromBulkEdit(id);
+          }
+        });
+
+        try {
+          const updated = await supabaseService.getProducts();
+          setProducts(updated);
+        } catch {}
+
+        const final = bulkSaveRef.current;
+        if (final) {
+          alert(`Edição concluída: ${final.updated} atualizados, ${final.failed} com erro.`);
+        }
+      } finally {
+        bulkSaveRef.current = null;
+        setIsBulkSaving(false);
+      }
+    };
+
+    const bulkEditFilteredIds = useMemo(() => {
+      const q = bulkEditSearch.trim().toLowerCase();
+      if (!q) return bulkEditIds;
+      return bulkEditIds.filter((id) => {
+        const d = bulkEditDrafts[id];
+        if (!d) return false;
+        return (d.name || '').toLowerCase().includes(q) || (d.category || '').toLowerCase().includes(q);
+      });
+    }, [bulkEditIds, bulkEditDrafts, bulkEditSearch]);
+
+    const bulkEditTotalPages = useMemo(() => {
+      return Math.max(1, Math.ceil(bulkEditFilteredIds.length / Math.max(1, bulkEditPageSize)));
+    }, [bulkEditFilteredIds.length, bulkEditPageSize]);
+
+    useEffect(() => {
+      if (bulkEditPage > bulkEditTotalPages) setBulkEditPage(bulkEditTotalPages);
+      if (bulkEditPage < 1) setBulkEditPage(1);
+    }, [bulkEditTotalPages]);
+
+    const bulkEditVisibleIds = useMemo(() => {
+      const start = (bulkEditPage - 1) * Math.max(1, bulkEditPageSize);
+      const end = start + Math.max(1, bulkEditPageSize);
+      return bulkEditFilteredIds.slice(start, end);
+    }, [bulkEditFilteredIds, bulkEditPage, bulkEditPageSize]);
 
     const downloadTextFile = (filename: string, content: string, mime: string) => {
       const blob = new Blob([content], { type: mime });
@@ -3243,6 +3946,28 @@ export default function App() {
         const progress = { total, processed: 0, added: 0, skipped: 0, failed: 0 };
         setBulkImportProgress({ ...progress });
 
+        const normalizeCatKey = (value: string) => String(value || '').trim().toLowerCase();
+        const existingCatsKey = new Set((categories || []).map(c => normalizeCatKey(c.name)).filter(Boolean));
+        const ensureCategoryExists = async (name: string) => {
+          const n = String(name || '').trim();
+          if (!n) return;
+          const key = normalizeCatKey(n);
+          if (existingCatsKey.has(key)) return;
+          try {
+            const created = await supabaseService.addCategory(n);
+            existingCatsKey.add(key);
+            setCategories(prev => {
+              const already = prev.some(c => c.id === created.id);
+              return already ? prev : [...prev, created].sort((a, b) => (a.name || '').localeCompare((b.name || ''), 'pt-BR', { sensitivity: 'base' }));
+            });
+          } catch {}
+        };
+
+        const categoriesInCsv = Array.from(new Set(rows.map(r => String(get(r, ['category', 'categoria'])).trim()).filter(Boolean)));
+        for (const catName of categoriesInCsv) {
+          await ensureCategoryExists(catName);
+        }
+
         const messages: string[] = [];
         for (let i = 0; i < rows.length; i++) {
           const r = rows[i];
@@ -3257,6 +3982,8 @@ export default function App() {
             setBulkImportProgress({ ...progress });
             continue;
           }
+
+          await ensureCategoryExists(category);
 
           const key = name.toLowerCase();
           if (existingByName.has(key)) {
@@ -3343,155 +4070,1074 @@ export default function App() {
       }
     };
 
+    const normalizeCategoryKey = (value: string) => {
+      return String(value || '').trim().toLowerCase();
+    };
+
+    const handleCreateCategory = async () => {
+      const name = String(newCategoryName || '').trim();
+      if (!name) return;
+      if ((categories || []).some(c => normalizeCategoryKey(c.name) === normalizeCategoryKey(name))) {
+        alert('Essa categoria já existe.');
+        return;
+      }
+      setIsCategorySaving(true);
+      try {
+        const created = await supabaseService.addCategory(name);
+        setCategories(prev => {
+          const already = prev.some(c => c.id === created.id);
+          return already ? prev : [...prev, created].sort((a, b) => (a.name || '').localeCompare((b.name || ''), 'pt-BR', { sensitivity: 'base' }));
+        });
+        setNewCategoryName('');
+      } catch (e: any) {
+        alert('Erro ao criar categoria: ' + (e?.message || 'Erro desconhecido'));
+      } finally {
+        setIsCategorySaving(false);
+      }
+    };
+
+    const handleStartEditCategory = (cat: Category) => {
+      setEditingCategoryId(cat.id);
+      setEditingCategoryName(cat.name || '');
+    };
+
+    const handleCancelEditCategory = () => {
+      setEditingCategoryId(null);
+      setEditingCategoryName('');
+    };
+
+    const handleSaveEditCategory = async () => {
+      if (!editingCategoryId) return;
+      const newName = String(editingCategoryName || '').trim();
+      if (!newName) return;
+      const current = (categories || []).find(c => c.id === editingCategoryId);
+      if (!current) return;
+      const oldName = String(current.name || '').trim();
+      const newKey = normalizeCategoryKey(newName);
+      const duplicate = (categories || []).some(c => c.id !== editingCategoryId && normalizeCategoryKey(c.name) === newKey);
+      if (duplicate) {
+        alert('Já existe uma categoria com esse nome.');
+        return;
+      }
+      setIsCategorySaving(true);
+      try {
+        const updated = await supabaseService.updateCategoryName(editingCategoryId, newName);
+        if (oldName && oldName !== newName) {
+          await supabaseService.renameProductsCategory(oldName, newName);
+          setProducts(prev => prev.map(p => p.category === oldName ? { ...p, category: newName } : p));
+          setFilterCategory(prev => prev === oldName ? newName : prev);
+        }
+        setCategories(prev => prev.map(c => c.id === updated.id ? updated : c).sort((a, b) => (a.name || '').localeCompare((b.name || ''), 'pt-BR', { sensitivity: 'base' })));
+        setEditingCategoryId(null);
+        setEditingCategoryName('');
+      } catch (e: any) {
+        alert('Erro ao salvar categoria: ' + (e?.message || 'Erro desconhecido'));
+      } finally {
+        setIsCategorySaving(false);
+      }
+    };
+
     return (
       <div className="min-h-screen bg-background-light pb-24">
         <Header 
-          title="Produtos" 
+          title={mode === 'bulk-edit' ? 'Edição em Massa' : 'Produtos'} 
+          showBack={mode === 'bulk-edit'}
+          onBack={() => navigate('products')}
           rightElement={
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIsBulkImportOpen(true)}
-                className="p-2 bg-white border border-slate-200 text-slate-700 rounded-full"
-                title="Importar lista"
-              >
-                <FileText size={22} />
-              </button>
-              <button onClick={() => { setProductToEdit(null); navigate('product-form'); }} className="p-2 bg-primary text-white rounded-full">
-                <Plus size={24} />
-              </button>
-            </div>
+            mode === 'bulk-edit' ? (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => startBulkSave(bulkEditIds, bulkEditAutoRemoveOnSave)}
+                  disabled={isBulkSaving || bulkEditIds.length === 0}
+                  className="px-4 py-3 bg-slate-900 text-white rounded-2xl text-xs font-black uppercase tracking-widest shadow-lg disabled:opacity-60 active:scale-95 transition-all"
+                >
+                  {isBulkSaving ? 'Salvando...' : 'Salvar Tudo'}
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsBulkImportOpen(true)}
+                  className="p-2 bg-white border border-slate-200 text-slate-700 rounded-full"
+                  title="Importar lista"
+                >
+                  <FileText size={22} />
+                </button>
+                <button onClick={() => { setProductToEdit(null); navigate('product-form'); }} className="p-2 bg-primary text-white rounded-full">
+                  <Plus size={24} />
+                </button>
+              </div>
+            )
           }
         />
         
-        <section className="p-4 space-y-4">
-          <div className="relative w-full">
-            <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input 
-              className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none font-bold" 
-              placeholder="Buscar produtos..." 
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 flex-1">
-              {categoriesList.map(cat => (
+        {mode === 'list' && (
+          <>
+            <section className="p-4 space-y-4">
+              <div className="grid grid-cols-2 gap-2">
                 <button
-                  key={cat}
-                  onClick={() => setFilterCategory(cat)}
-                  className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap border ${
-                    filterCategory === cat ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-white text-slate-500 border-slate-200'
+                  onClick={() => setProductsTab('products')}
+                  className={`h-12 rounded-2xl text-xs font-black uppercase tracking-widest border transition-all ${
+                    productsTab === 'products' ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-600 border-slate-200'
                   }`}
                 >
-                  {cat}
+                  Produtos
                 </button>
-              ))}
-            </div>
-            {filtered.length > 0 && (
-              <label className="flex items-center gap-2 ml-4 shrink-0 cursor-pointer p-2 rounded-xl hover:bg-slate-100 text-sm font-bold text-slate-600 transition-colors">
-                <input 
-                  type="checkbox" 
-                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
-                  checked={selectedProducts.length === filtered.length && filtered.length > 0}
-                  onChange={toggleAll}
-                />
-                <span className="hidden sm:inline">Selecionar Todos</span>
-              </label>
-            )}
-          </div>
-        </section>
+                <button
+                  onClick={() => setProductsTab('categories')}
+                  className={`h-12 rounded-2xl text-xs font-black uppercase tracking-widest border transition-all ${
+                    productsTab === 'categories' ? 'bg-slate-900 text-white border-slate-900 shadow-lg' : 'bg-white text-slate-600 border-slate-200'
+                  }`}
+                >
+                  Categorias
+                </button>
+              </div>
 
-        <main className="px-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-32">
-          {filtered.map(product => (
-            <div key={product.id} className="relative bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4 hover:border-primary/20 transition-all">
-              <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-slate-100">
+              {productsTab === 'categories' ? (
+                <>
+                  <div className="p-4 rounded-3xl bg-white border border-slate-200 space-y-3">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Criar Categoria</p>
+                    <div className="flex gap-2">
+                      <input
+                        value={newCategoryName}
+                        onChange={(e) => setNewCategoryName(e.target.value)}
+                        placeholder="Ex: Bebidas"
+                        className="flex-1 h-12 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black outline-none"
+                        disabled={isCategorySaving}
+                      />
+                      <button
+                        onClick={handleCreateCategory}
+                        disabled={isCategorySaving || !String(newCategoryName || '').trim()}
+                        className="h-12 px-4 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20 disabled:opacity-60 active:scale-95 transition-all"
+                      >
+                        Criar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="relative w-full">
+                    <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none font-bold"
+                      placeholder="Buscar categorias..."
+                      value={categorySearch}
+                      onChange={e => setCategorySearch(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-3">
+                    {categoriesFiltered.length === 0 ? (
+                      <div className="p-12 text-center bg-white rounded-[32px] border border-dashed border-slate-200">
+                        <p className="text-xs font-black text-slate-400 uppercase tracking-widest">Nenhuma categoria</p>
+                      </div>
+                    ) : (
+                      categoriesFiltered.map((cat) => {
+                        const isEditing = editingCategoryId === cat.id;
+                        return (
+                          <div key={cat.id} className="p-4 rounded-3xl bg-white border border-slate-200">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex-1 min-w-0">
+                                {isEditing ? (
+                                  <input
+                                    value={editingCategoryName}
+                                    onChange={(e) => setEditingCategoryName(e.target.value)}
+                                    className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-slate-50 font-black outline-none"
+                                    disabled={isCategorySaving}
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <p className="text-sm font-black text-slate-900 truncate">{cat.name}</p>
+                                )}
+                                {!isEditing && (
+                                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mt-1">
+                                    Produtos: {products.filter(p => p.category === cat.name).length}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex gap-2 shrink-0">
+                                {isEditing ? (
+                                  <>
+                                    <button
+                                      onClick={handleCancelEditCategory}
+                                      disabled={isCategorySaving}
+                                      className="h-11 px-3 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase tracking-widest text-[10px] active:scale-95 transition-all disabled:opacity-60"
+                                    >
+                                      Cancelar
+                                    </button>
+                                    <button
+                                      onClick={handleSaveEditCategory}
+                                      disabled={isCategorySaving || !String(editingCategoryName || '').trim()}
+                                      className="h-11 px-3 rounded-2xl bg-slate-900 text-white font-black uppercase tracking-widest text-[10px] shadow-lg disabled:opacity-60 active:scale-95 transition-all"
+                                    >
+                                      Salvar
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    onClick={() => handleStartEditCategory(cat)}
+                                    disabled={isCategorySaving}
+                                    className="h-11 px-3 rounded-2xl bg-white border border-slate-200 text-slate-700 font-black uppercase tracking-widest text-[10px] active:scale-95 transition-all"
+                                  >
+                                    Editar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              ) : (
+              <div className="relative w-full">
+                <Search size={20} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input 
-                  type="checkbox" 
-                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary cursor-pointer"
-                  checked={selectedProducts.includes(product.id)}
-                  onChange={() => toggleSelection(product.id)}
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl outline-none font-bold" 
+                  placeholder="Buscar produtos..." 
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
                 />
               </div>
-              <div className={`w-20 h-20 rounded-xl overflow-hidden shrink-0 transition-opacity ${!product.available ? 'opacity-40 grayscale' : 'bg-slate-100'}`}>
-                <img src={product.image || 'https://picsum.photos/seed/prod/200/200'} alt={product.name} className="w-full h-full object-cover" />
+              )}
+
+              {productsTab === 'products' && (
+              <div className="flex items-center justify-between">
+                <div className="flex gap-2 overflow-x-auto no-scrollbar -mx-4 px-4 flex-1">
+                  {categoriesList.map(cat => (
+                    <button
+                      key={cat}
+                      onClick={() => setFilterCategory(cat)}
+                      className={`px-4 py-2 rounded-xl text-xs font-black uppercase transition-all whitespace-nowrap border ${
+                        filterCategory === cat ? 'bg-primary text-white border-primary shadow-lg shadow-primary/20' : 'bg-white text-slate-500 border-slate-200'
+                      }`}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+                {filtered.length > 0 && (
+                  <label className="flex items-center gap-2 ml-4 shrink-0 cursor-pointer p-2 rounded-xl hover:bg-slate-100 text-sm font-bold text-slate-600 transition-colors">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                      checked={selectedProducts.length === filtered.length && filtered.length > 0}
+                      onChange={toggleAll}
+                    />
+                    <span className="hidden sm:inline">Selecionar Todos</span>
+                  </label>
+                )}
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-start">
-                  <h3 className={`font-black text-sm truncate ${!product.available ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{product.name}</h3>
-                  <div className="flex gap-2">
-                    <button onClick={() => { setProductToEdit(product); navigate('product-form'); }} className="text-slate-300 hover:text-primary transition-colors">
-                      <Edit2 size={16} />
-                    </button>
-                    <button onClick={() => handleDelete(product.id)} className="text-slate-300 hover:text-red-500 transition-colors">
-                      <Trash2 size={16} />
-                    </button>
+              )}
+            </section>
+
+            {productsTab === 'products' && (
+            <main className="px-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-32">
+              {filtered.map(product => (
+                <div key={product.id} className="relative bg-white p-3 rounded-2xl shadow-sm border border-slate-100 flex gap-4 hover:border-primary/20 transition-all">
+                  <div className="absolute top-2 left-2 z-10 bg-white/90 backdrop-blur-sm rounded-lg p-1 shadow-sm border border-slate-100">
+                    <input 
+                      type="checkbox" 
+                      className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary cursor-pointer"
+                      checked={selectedProducts.includes(product.id)}
+                      onChange={() => toggleSelection(product.id)}
+                    />
+                  </div>
+                  <div className={`w-20 h-20 rounded-xl overflow-hidden shrink-0 transition-opacity ${!product.available ? 'opacity-40 grayscale' : 'bg-slate-100'}`}>
+                    <img src={product.image || 'https://picsum.photos/seed/prod/200/200'} alt={product.name} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start">
+                      <h3 className={`font-black text-sm truncate ${!product.available ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{product.name}</h3>
+                      <div className="flex gap-2">
+                        <button onClick={() => { setProductToEdit(product); navigate('product-form'); }} className="text-slate-300 hover:text-primary transition-colors">
+                          <Edit2 size={16} />
+                        </button>
+                        <button onClick={() => handleDelete(product.id)} className="text-slate-300 hover:text-red-500 transition-colors">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{product.category}</p>
+                    <div className="mt-2 flex justify-between items-end">
+                      <span className={`font-black text-base ${!product.available ? 'text-slate-400' : 'text-primary'}`}>R$ {product.sale_price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => fetchHistory(product)}
+                          className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+                          title="Histórico"
+                        >
+                          <Clock size={14} />
+                        </button>
+                        <button 
+                          onClick={() => setReplenishingProduct(product)}
+                          className="p-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-1 text-[10px] font-black uppercase transition-colors"
+                        >
+                          <PlusCircle size={14} /> Repor
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-1 flex items-center flex-wrap gap-1">
+                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${product.stock <= 5 ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-500'}`}>
+                        Estoque: {product.stock} {product.unidade_medida}
+                      </span>
+                      {!product.available && (
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">
+                          Oculto
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{product.category}</p>
-                <div className="mt-2 flex justify-between items-end">
-                  <span className={`font-black text-base ${!product.available ? 'text-slate-400' : 'text-primary'}`}>R$ {product.sale_price.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={() => fetchHistory(product)}
-                      className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
-                      title="Histórico"
+              ))}
+            </main>
+            )}
+
+            <AnimatePresence>
+              {productsTab === 'products' && selectedProducts.length > 0 && (
+                <motion.div 
+                  initial={{ y: 100, opacity: 0 }} 
+                  animate={{ y: 0, opacity: 1 }} 
+                  exit={{ y: 100, opacity: 0 }}
+                  className="fixed bottom-20 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-max z-[90] bg-slate-900 text-white rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 border border-slate-800"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-sm font-bold shadow-lg shadow-primary/20">{selectedProducts.length}</span>
+                    <span className="text-sm font-black uppercase tracking-widest text-slate-200">Selecionados</span>
+                  </div>
+                  <div className="flex gap-2 w-full sm:w-auto">
+                    <button
+                      onClick={openBulkEdit}
+                      className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-primary/20 text-primary hover:bg-primary hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
                     >
-                      <Clock size={14} />
+                      Editar em Massa
                     </button>
                     <button 
-                      onClick={() => setReplenishingProduct(product)}
-                      className="p-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 flex items-center gap-1 text-[10px] font-black uppercase transition-colors"
+                      onClick={() => handleBulkAvailability(true)}
+                      className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
                     >
-                      <PlusCircle size={14} /> Repor
+                      Exibir no Catálogo
+                    </button>
+                    <button 
+                      onClick={() => handleBulkAvailability(false)}
+                      className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-white/10 text-slate-300 hover:bg-white/20 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
+                    >
+                      Ocultar
                     </button>
                   </div>
-                </div>
-                <div className="mt-1 flex items-center flex-wrap gap-1">
-                  <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${product.stock <= 5 ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-500'}`}>
-                    Estoque: {product.stock} {product.unidade_medida}
-                  </span>
-                  {!product.available && (
-                    <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-md bg-slate-100 text-slate-500">
-                      Oculto
-                    </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </>
+        )}
+
+        {mode === 'bulk-edit' && (
+          <main className="p-4 pb-32">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="space-y-4">
+                <div className="p-4 rounded-3xl bg-white border border-slate-200">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Produtos em edição</p>
+                      <p className="text-lg font-black text-slate-900">{bulkEditIds.length}</p>
+                    </div>
+                    {bulkSaveProgress && (
+                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-600">
+                        {bulkSaveProgress.done}/{bulkSaveProgress.total} • OK {bulkSaveProgress.updated} • ER {bulkSaveProgress.failed}
+                      </div>
+                    )}
+                  </div>
+
+                  {bulkSaveErrors.length > 0 && (
+                    <div className="mt-4 p-3 rounded-2xl bg-red-50 border border-red-100">
+                      <p className="text-[10px] font-black text-red-700 uppercase tracking-widest">Erros</p>
+                      <div className="mt-2 space-y-1">
+                        {bulkSaveErrors.slice(0, 6).map((m, idx) => (
+                          <div key={idx} className="text-xs font-bold text-red-600 break-words">{m}</div>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
+
+                <div className="p-4 rounded-3xl bg-slate-50 border border-slate-200 space-y-4">
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Ferramentas</p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Categoria (massa)</label>
+                      <input
+                        value={bulkEditGlobal.category}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, category: e.target.value }))}
+                        placeholder="Ex: Bebidas"
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Visibilidade (massa)</label>
+                      <select
+                        value={bulkEditGlobal.available}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, available: e.target.value as any }))}
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving}
+                      >
+                        <option value="keep">Manter</option>
+                        <option value="true">Exibir</option>
+                        <option value="false">Ocultar</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-1 md:col-span-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Preço (massa)</label>
+                      <select
+                        value={bulkEditGlobal.salePriceMode}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, salePriceMode: e.target.value as any }))}
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving}
+                      >
+                        <option value="keep">Manter</option>
+                        <option value="set">Definir</option>
+                        <option value="increase_percent">Aumentar %</option>
+                        <option value="increase_fixed">Aumentar R$</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1 md:col-span-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Valor</label>
+                      <input
+                        value={bulkEditGlobal.salePriceValue}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, salePriceValue: e.target.value }))}
+                        placeholder={bulkEditGlobal.salePriceMode === 'increase_percent' ? 'Ex: 10' : 'Ex: 19,90'}
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving || bulkEditGlobal.salePriceMode === 'keep'}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-1 md:col-span-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Estoque (massa)</label>
+                      <select
+                        value={bulkEditGlobal.stockMode}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, stockMode: e.target.value as any }))}
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving}
+                      >
+                        <option value="keep">Manter</option>
+                        <option value="set">Definir</option>
+                        <option value="add">Somar</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1 md:col-span-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Valor</label>
+                      <input
+                        value={bulkEditGlobal.stockValue}
+                        onChange={(e) => setBulkEditGlobal(prev => ({ ...prev, stockValue: e.target.value }))}
+                        placeholder={bulkEditGlobal.stockMode === 'add' ? 'Ex: 50' : 'Ex: 10'}
+                        className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                        disabled={isBulkSaving || bulkEditGlobal.stockMode === 'keep'}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={applyGlobalBulkEdits}
+                    disabled={isBulkSaving}
+                    className="w-full h-12 rounded-2xl bg-slate-900 text-white font-black uppercase tracking-widest text-xs active:scale-95 transition-all disabled:opacity-60"
+                  >
+                    Aplicar aos Produtos em edição
+                  </button>
+
+                  <div className="p-4 rounded-3xl bg-white border border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Imagens (auto-match)</p>
+                      {bulkImageAutoMatchStats && (
+                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">
+                          OK {bulkImageAutoMatchStats.matched} • Sem match {bulkImageAutoMatchStats.unmatched}
+                        </p>
+                      )}
+                    </div>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={isBulkSaving}
+                      onChange={(e) => {
+                        const list = Array.from(e.target.files || []);
+                        const files = list.filter((f): f is File => f instanceof File);
+                        autoMatchImagesToProducts(files);
+                      }}
+                      className="w-full"
+                    />
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest leading-relaxed">
+                      Dica: nomes dos arquivos podem ser o ID do produto (uuid.jpg) ou o nome do produto (ex: coca-cola-2l.jpg).
+                    </p>
+                  </div>
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={bulkEditAutoRemoveOnSave}
+                      onChange={(e) => setBulkEditAutoRemoveOnSave(e.target.checked)}
+                      disabled={isBulkSaving}
+                      className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                    />
+                    <span className="text-xs font-black text-slate-600 uppercase tracking-widest">Remover da lista ao salvar</span>
+                  </label>
+                </div>
+
+                <div className="p-4 rounded-3xl bg-white border border-slate-200 flex flex-col overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Lista de edição</p>
+                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      {bulkEditFilteredIds.length}/{bulkEditIds.length}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <input
+                      value={bulkEditSearch}
+                      onChange={(e) => { setBulkEditSearch(e.target.value); setBulkEditPage(1); }}
+                      placeholder="Buscar (nome/categoria)"
+                      className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-bold text-xs outline-none md:col-span-2"
+                      disabled={isBulkSaving}
+                    />
+                    <select
+                      value={String(bulkEditPageSize)}
+                      onChange={(e) => { setBulkEditPageSize(Number(e.target.value)); setBulkEditPage(1); }}
+                      className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-black text-xs outline-none"
+                      disabled={isBulkSaving}
+                    >
+                      <option value="25">25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => setBulkEditPage(p => Math.max(1, p - 1))}
+                      className="px-3 py-2 rounded-2xl bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-60"
+                      disabled={isBulkSaving || bulkEditPage <= 1}
+                    >
+                      <ChevronLeft size={14} className="inline mr-1" /> Anterior
+                    </button>
+                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                      Página {bulkEditPage}/{bulkEditTotalPages}
+                    </div>
+                    <button
+                      onClick={() => setBulkEditPage(p => Math.min(bulkEditTotalPages, p + 1))}
+                      className="px-3 py-2 rounded-2xl bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-60"
+                      disabled={isBulkSaving || bulkEditPage >= bulkEditTotalPages}
+                    >
+                      Próxima <ChevronRight size={14} className="inline ml-1" />
+                    </button>
+                  </div>
+
+                  <div className="mt-4 overflow-y-auto no-scrollbar pr-1 space-y-2">
+                    {bulkEditVisibleIds.map((id) => {
+                      const d = bulkEditDrafts[id];
+                      const o = bulkEditOriginals[id];
+                      const p = productById.get(id);
+                      if (!d || !o) return null;
+                      const isActive = bulkEditActiveId === id;
+                      const imgFile = bulkEditImages[id] || null;
+                      const varsDraftComparable = (Array.isArray(d.variations) ? d.variations : [])
+                        .map(v => ({
+                          id: v.id ? String(v.id) : '',
+                          name: String(v.name || '').trim(),
+                          value: String(v.value || '').trim(),
+                          additional_price: String(v.additional_price || '').trim(),
+                          stock: String(v.stock || '').trim(),
+                          sku: String(v.sku || '').trim()
+                        }))
+                        .filter(v => v.name.length > 0 && v.value.length > 0);
+                      const varsOrigComparable = (Array.isArray(o.variations) ? o.variations : []).map(v => ({
+                        id: String(v.id),
+                        name: String(v.name || '').trim(),
+                        value: String(v.value || '').trim(),
+                        additional_price: String(v.additional_price ?? '').trim(),
+                        stock: String(v.stock ?? '').trim(),
+                        sku: String(v.sku || '').trim()
+                      }));
+                      const variationsChanged = JSON.stringify(varsDraftComparable) !== JSON.stringify(varsOrigComparable);
+                      const changed =
+                        String(d.name || '').trim() !== o.name ||
+                        String(d.category || '').trim() !== o.category ||
+                        String(d.purchase_price || '').trim() !== String(o.purchase_price) ||
+                        String(d.sale_price || '').trim() !== String(o.sale_price) ||
+                        String(d.stock || '').trim() !== String(o.stock) ||
+                        String(d.description || '') !== String(o.description || '') ||
+                        d.available !== o.available ||
+                        String(d.unidade_medida || '').trim() !== String(o.unidade_medida || '') ||
+                        String(d.quantidade_unidade || '').trim() !== String(o.quantidade_unidade) ||
+                        d.controla_estoque !== o.controla_estoque ||
+                        String(d.limite_por_pedido || '').trim() !== String(o.limite_por_pedido ?? '') ||
+                        (imgFile ? true : String(d.image || '').trim() !== String(o.image || '')) ||
+                        variationsChanged;
+
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => setBulkEditActiveId(id)}
+                          className={`w-full p-3 rounded-3xl border text-left transition-all ${
+                            isActive ? 'bg-primary/5 border-primary/30' : 'bg-slate-50 border-slate-100 hover:border-primary/20'
+                          }`}
+                          disabled={isBulkSaving}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="size-11 rounded-2xl overflow-hidden bg-white border border-slate-100 shrink-0">
+                              <img src={p?.image || 'https://picsum.photos/seed/prod/200/200'} alt="" className="w-full h-full object-cover" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-black text-slate-900 truncate">{d.name || 'Sem nome'}</p>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest truncate">{d.category || 'Sem categoria'}</p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {imgFile && <span className="px-2 py-1 rounded-xl bg-slate-900 text-white text-[9px] font-black uppercase tracking-widest">Foto</span>}
+                                  {changed && <span className="px-2 py-1 rounded-xl bg-amber-50 text-amber-700 text-[9px] font-black uppercase tracking-widest">Alterado</span>}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); removeFromBulkEdit(id); }}
+                                    className="px-2 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-[9px] font-black uppercase tracking-widest active:scale-95 transition-all"
+                                    disabled={isBulkSaving}
+                                  >
+                                    Remover
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-3xl bg-white border border-slate-200">
+                {!bulkEditActiveId || !bulkEditDrafts[bulkEditActiveId] ? (
+                  <div className="p-8 text-center bg-slate-50 rounded-3xl border border-dashed border-slate-200">
+                    <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Selecione um produto na lista</p>
+                  </div>
+                ) : (() => {
+                  const id = bulkEditActiveId;
+                  const d = bulkEditDrafts[id];
+                  const p = productById.get(id);
+                  const imgFile = bulkEditImages[id] || null;
+
+                  const goPrev = () => {
+                    const list = bulkEditFilteredIds;
+                    const idx = list.indexOf(id);
+                    const nextId = idx > 0 ? list[idx - 1] : null;
+                    if (nextId) setBulkEditActiveId(nextId);
+                  };
+                  const goNext = () => {
+                    const list = bulkEditFilteredIds;
+                    const idx = list.indexOf(id);
+                    const nextId = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null;
+                    if (nextId) setBulkEditActiveId(nextId);
+                  };
+
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Editor do Produto</p>
+                          <p className="text-lg font-black text-slate-900 truncate">{d.name || 'Sem nome'}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">{d.category || 'Sem categoria'}</p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={goPrev}
+                            disabled={isBulkSaving || bulkEditFilteredIds.indexOf(id) <= 0}
+                            className="px-3 py-2 rounded-2xl bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-60"
+                          >
+                            <ChevronLeft size={14} className="inline mr-1" /> Anterior
+                          </button>
+                          <button
+                            onClick={goNext}
+                            disabled={isBulkSaving || bulkEditFilteredIds.indexOf(id) >= bulkEditFilteredIds.length - 1}
+                            className="px-3 py-2 rounded-2xl bg-slate-100 text-slate-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-60"
+                          >
+                            Próxima <ChevronRight size={14} className="inline ml-1" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div className="md:col-span-1 space-y-2">
+                          <div className="aspect-square rounded-3xl overflow-hidden bg-slate-50 border border-slate-200">
+                            <img src={p?.image || d.image || 'https://picsum.photos/seed/prod/400/400'} alt="" className="w-full h-full object-cover" />
+                          </div>
+                          <label className="w-full h-11 rounded-2xl bg-white border border-slate-200 text-slate-700 font-black uppercase tracking-widest text-[10px] active:scale-95 transition-all flex items-center justify-center cursor-pointer">
+                            Selecionar Foto
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              disabled={isBulkSaving}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0] || null;
+                                setBulkEditImages(prev => ({ ...prev, [id]: file }));
+                              }}
+                            />
+                          </label>
+                          <button
+                            onClick={() => setBulkEditImages(prev => ({ ...prev, [id]: null }))}
+                            className="w-full h-11 rounded-2xl bg-slate-100 text-slate-700 font-black uppercase tracking-widest text-[10px] active:scale-95 transition-all disabled:opacity-60"
+                            disabled={isBulkSaving || !imgFile}
+                          >
+                            Limpar Foto
+                          </button>
+                          {imgFile && (
+                            <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest break-words">
+                              Foto selecionada: {imgFile.name}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="md:col-span-2 space-y-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Nome</label>
+                              <input
+                                value={d.name}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], name: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Categoria</label>
+                              <input
+                                value={d.category}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], category: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                                disabled={isBulkSaving}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Descrição</label>
+                            <textarea
+                              value={d.description}
+                              onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], description: e.target.value } }))}
+                              className="w-full p-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none resize-none"
+                              rows={3}
+                              disabled={isBulkSaving}
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Preço de Compra</label>
+                              <input
+                                value={d.purchase_price}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], purchase_price: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: 10,50"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Preço de Venda</label>
+                              <input
+                                value={d.sale_price}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], sale_price: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: 19,90"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Unidade</label>
+                              <input
+                                value={d.unidade_medida}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], unidade_medida: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-bold text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: Caixa"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Itens p/ unidade</label>
+                              <input
+                                value={d.quantidade_unidade}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setBulkEditDrafts(prev => {
+                                    const next = { ...prev };
+                                    const current = next[id];
+                                    if (!current) return prev;
+                                    const qtdUn = Math.max(1, Math.floor(Number(String(value || '1').replace(/\./g, '').replace(',', '.')) || 1));
+                                    const qtdUnidades = Number(String(current.qtd_unidades_estoque || '').replace(/\./g, '').replace(',', '.'));
+                                    const shouldAuto = Number.isFinite(qtdUnidades) && qtdUnidades > 0;
+                                    const stock = shouldAuto ? String(Math.max(0, Math.floor(qtdUnidades) * qtdUn)) : current.stock;
+                                    next[id] = { ...current, quantidade_unidade: value, stock, qtd_unidades_estoque: current.qtd_unidades_estoque };
+                                    return next;
+                                  });
+                                }}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: 12"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Unidades em estoque</label>
+                              <input
+                                value={d.qtd_unidades_estoque}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setBulkEditDrafts(prev => {
+                                    const next = { ...prev };
+                                    const current = next[id];
+                                    if (!current) return prev;
+                                    const qtdUn = Math.max(1, Math.floor(Number(String(current.quantidade_unidade || '1').replace(/\./g, '').replace(',', '.')) || 1));
+                                    const qtd = Number(String(value || '').replace(/\./g, '').replace(',', '.'));
+                                    const safeQtd = Number.isFinite(qtd) ? Math.max(0, Math.floor(qtd)) : 0;
+                                    next[id] = { ...current, qtd_unidades_estoque: value, stock: String(safeQtd * qtdUn) };
+                                    return next;
+                                  });
+                                }}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: 10"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Estoque (itens)</label>
+                              <input
+                                value={d.stock}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], stock: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Ex: 120"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Limite por pedido</label>
+                              <input
+                                value={d.limite_por_pedido}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], limite_por_pedido: e.target.value } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                                placeholder="Vazio = sem limite"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Visibilidade</label>
+                              <select
+                                value={String(d.available)}
+                                onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], available: e.target.value === 'true' } }))}
+                                className="w-full h-12 px-4 rounded-2xl border border-slate-200 bg-white font-black text-sm outline-none"
+                                disabled={isBulkSaving}
+                              >
+                                <option value="true">Exibir</option>
+                                <option value="false">Ocultar</option>
+                              </select>
+                            </div>
+                            <div className="md:col-span-2 flex items-center gap-3 pt-6">
+                              <label className="flex items-center gap-3 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={d.controla_estoque}
+                                  onChange={(e) => setBulkEditDrafts(prev => ({ ...prev, [id]: { ...prev[id], controla_estoque: e.target.checked } }))}
+                                  disabled={isBulkSaving}
+                                  className="w-4 h-4 rounded border-slate-300 text-primary focus:ring-primary"
+                                />
+                                <span className="text-xs font-black text-slate-600 uppercase tracking-widest">Controla estoque</span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="p-4 rounded-3xl bg-slate-50 border border-slate-200 space-y-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Variações</p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBulkEditDrafts(prev => {
+                                    const next = { ...prev };
+                                    const current = next[id];
+                                    if (!current) return prev;
+                                    const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                    variations.push({ name: '', value: '', additional_price: '0', stock: '0', sku: '' });
+                                    next[id] = { ...current, variations };
+                                    return next;
+                                  });
+                                }}
+                                className="px-3 py-2 rounded-2xl bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest"
+                                disabled={isBulkSaving}
+                              >
+                                Adicionar
+                              </button>
+                            </div>
+
+                            {(Array.isArray(d.variations) ? d.variations : []).length === 0 ? (
+                              <div className="p-4 rounded-2xl bg-white border border-dashed border-slate-200 text-center">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Sem variações</p>
+                              </div>
+                            ) : (
+                              <div className="space-y-3">
+                                {(d.variations || []).map((v, idx) => (
+                                  <div key={`${id}-var-${v.id || 'new'}-${idx}`} className="p-3 rounded-3xl bg-white border border-slate-200">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      <input
+                                        value={v.name}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                            variations[idx] = { ...variations[idx], name: value };
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-black text-xs outline-none"
+                                        disabled={isBulkSaving}
+                                        placeholder="Nome (ex: Tamanho)"
+                                      />
+                                      <input
+                                        value={v.value}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                            variations[idx] = { ...variations[idx], value };
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-bold text-xs outline-none"
+                                        disabled={isBulkSaving}
+                                        placeholder="Valor (ex: 1L)"
+                                      />
+                                    </div>
+                                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-2">
+                                      <input
+                                        value={v.additional_price}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                            variations[idx] = { ...variations[idx], additional_price: value };
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-black text-xs outline-none"
+                                        disabled={isBulkSaving}
+                                        placeholder="Adic. (R$)"
+                                      />
+                                      <input
+                                        value={v.stock}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                            variations[idx] = { ...variations[idx], stock: value };
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-black text-xs outline-none"
+                                        disabled={isBulkSaving}
+                                        placeholder="Estoque"
+                                      />
+                                      <input
+                                        value={v.sku}
+                                        onChange={(e) => {
+                                          const value = e.target.value;
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? [...current.variations] : [];
+                                            variations[idx] = { ...variations[idx], sku: value };
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl border border-slate-200 bg-white font-black text-xs outline-none md:col-span-2"
+                                        disabled={isBulkSaving}
+                                        placeholder="SKU (opcional)"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setBulkEditDrafts(prev => {
+                                            const next = { ...prev };
+                                            const current = next[id];
+                                            if (!current) return prev;
+                                            const variations = Array.isArray(current.variations) ? current.variations.filter((_, i) => i !== idx) : [];
+                                            next[id] = { ...current, variations };
+                                            return next;
+                                          });
+                                        }}
+                                        className="w-full h-11 px-3 rounded-2xl bg-white border border-slate-200 text-slate-700 font-black uppercase tracking-widest text-[10px] active:scale-95 transition-all"
+                                        disabled={isBulkSaving}
+                                      >
+                                        Remover
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 pt-2">
+                            <button
+                              onClick={() => startBulkSave([id], bulkEditAutoRemoveOnSave)}
+                              className="h-14 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-xs shadow-lg shadow-primary/20 disabled:opacity-60 active:scale-95 transition-all"
+                              disabled={isBulkSaving}
+                            >
+                              Salvar este
+                            </button>
+                            <button
+                              onClick={() => startBulkSave(bulkEditIds, bulkEditAutoRemoveOnSave)}
+                              className="h-14 rounded-2xl bg-slate-900 text-white font-black uppercase tracking-widest text-xs shadow-lg disabled:opacity-60 active:scale-95 transition-all"
+                              disabled={isBulkSaving || bulkEditIds.length === 0}
+                            >
+                              Salvar Tudo
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
-          ))}
-        </main>
-
-        {/* Bulk Action Bar */}
-        <AnimatePresence>
-          {selectedProducts.length > 0 && (
-            <motion.div 
-              initial={{ y: 100, opacity: 0 }} 
-              animate={{ y: 0, opacity: 1 }} 
-              exit={{ y: 100, opacity: 0 }}
-              className="fixed bottom-20 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-max z-[90] bg-slate-900 text-white rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-4 sm:gap-6 border border-slate-800"
-            >
-              <div className="flex items-center gap-3">
-                <span className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-sm font-bold shadow-lg shadow-primary/20">{selectedProducts.length}</span>
-                <span className="text-sm font-black uppercase tracking-widest text-slate-200">Selecionados</span>
-              </div>
-              <div className="flex gap-2 w-full sm:w-auto">
-                <button 
-                  onClick={() => handleBulkAvailability(true)}
-                  className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
-                >
-                  Exibir no Catálogo
-                </button>
-                <button 
-                  onClick={() => handleBulkAvailability(false)}
-                  className="flex-1 sm:flex-none px-4 py-3 sm:py-2 bg-white/10 text-slate-300 hover:bg-white/20 hover:text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all text-center"
-                >
-                  Ocultar
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+          </main>
+        )}
 
         <AnimatePresence>
           {isBulkImportOpen && (
@@ -8691,7 +10337,8 @@ export default function App() {
       case 'verify-email': return <VerifyEmailPage />;
       case 'public-catalog': return <PublicCatalogPage />;
       case 'dashboard': return <DashboardPage />;
-      case 'products': return <ProductsPage />;
+      case 'products': return <ProductsPage mode="list" />;
+      case 'products-bulk-edit': return <ProductsPage mode="bulk-edit" />;
       case 'product-form': return <ProductFormPage />;
       case 'clients': return <ClientsPage />;
       case 'client-form': return <ClientFormPage />;

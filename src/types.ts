@@ -124,6 +124,7 @@ export type Page =
   | 'catalog'
   | 'dashboard' 
   | 'products' 
+  | 'products-bulk-edit'
   | 'product-form' 
   | 'clients' 
   | 'client-form' 

@@ -706,6 +706,43 @@ export const supabaseService = {
     return data as Category;
   },
 
+  async updateCategoryName(categoryId: string, name: string) {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Usuário não autenticado.');
+
+    const trimmed = String(name || '').trim();
+    if (!trimmed) throw new Error('Nome da categoria inválido.');
+
+    const { data, error } = await supabase
+      .from('categories')
+      .update({ name: trimmed })
+      .eq('id', categoryId)
+      .eq('user_id', user.id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data as Category;
+  },
+
+  async renameProductsCategory(oldName: string, newName: string) {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Usuário não autenticado.');
+
+    const from = String(oldName || '').trim();
+    const to = String(newName || '').trim();
+    if (!from || !to) return;
+    if (from === to) return;
+
+    const { error } = await supabase
+      .from('products')
+      .update({ category: to })
+      .eq('user_id', user.id)
+      .eq('category', from);
+    if (error) throw error;
+  },
+
   // --- PRODUCTS ---
   async getProducts() {
     const supabase = getSupabase();
@@ -820,6 +857,90 @@ export const supabaseService = {
       .single();
     if (error) throw error;
     return { ...data, price: data.sale_price } as Product;
+  },
+
+  async upsertProductVariations(
+    productId: string,
+    variations: Array<{ id?: string; name: string; value: string; additional_price: number; stock: number; sku?: string }>
+  ) {
+    const supabase = getSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error('Sessão expirada. Por favor, entre novamente.');
+
+    const cleaned = (Array.isArray(variations) ? variations : [])
+      .map(v => ({
+        id: v.id ? String(v.id) : undefined,
+        name: String(v.name || '').trim(),
+        value: String(v.value || '').trim(),
+        additional_price: Number(v.additional_price || 0),
+        stock: Math.max(0, Math.floor(Number(v.stock || 0))),
+        sku: v.sku ? String(v.sku).trim() : ''
+      }))
+      .filter(v => v.name.length > 0 && v.value.length > 0);
+
+    const { data: existingIdsData, error: existingIdsError } = await supabase
+      .from('product_variations')
+      .select('id')
+      .eq('product_id', productId);
+    if (existingIdsError) throw existingIdsError;
+
+    const existingIds = new Set<string>((existingIdsData || []).map((r: any) => String(r.id)));
+    const incomingIds = new Set<string>(cleaned.filter(v => v.id).map(v => String(v.id)));
+    const toDelete = Array.from(existingIds).filter(id => !incomingIds.has(id));
+
+    const toUpsert = cleaned
+      .filter(v => v.id)
+      .map(v => ({
+        id: v.id,
+        user_id: user.id,
+        product_id: productId,
+        name: v.name,
+        value: v.value,
+        additional_price: v.additional_price,
+        stock: v.stock,
+        sku: v.sku || null
+      }));
+
+    const toInsert = cleaned
+      .filter(v => !v.id)
+      .map(v => ({
+        user_id: user.id,
+        product_id: productId,
+        name: v.name,
+        value: v.value,
+        additional_price: v.additional_price,
+        stock: v.stock,
+        sku: v.sku || null
+      }));
+
+    if (toDelete.length > 0) {
+      const { error } = await supabase
+        .from('product_variations')
+        .delete()
+        .in('id', toDelete);
+      if (error) throw error;
+    }
+
+    if (toUpsert.length > 0) {
+      const { error } = await supabase
+        .from('product_variations')
+        .upsert(toUpsert, { onConflict: 'id' });
+      if (error) throw error;
+    }
+
+    if (toInsert.length > 0) {
+      const { error } = await supabase
+        .from('product_variations')
+        .insert(toInsert);
+      if (error) throw error;
+    }
+
+    const { data, error } = await supabase
+      .from('product_variations')
+      .select('*')
+      .eq('product_id', productId);
+    if (error) throw error;
+    return (data || []) as ProductVariation[];
   },
 
   async updateProductsAvailability(ids: string[], available: boolean) {
